@@ -2,7 +2,6 @@
 #include "pch.h"
 #include "Camera.h"
 
-
 // https://github.com/FFmpeg/FFmpeg/blob/master/doc/examples/demux_decode.c
 
 extern "C"
@@ -14,95 +13,14 @@ extern "C"
 	#include <libswscale/swscale.h>
 }
 
+
+//####################################################################################################################################
+
 class Frame::Impl
 {
 public:
 	AVFrame* frame = nullptr;
 };
-
-class ImageConverter::Impl
-{
-public:
-	SwsContext* sws = nullptr;
-	int width = 0;
-	int height = 0;
-	AVPixelFormat sourceFormat = AV_PIX_FMT_NONE;
-};
-
-
-ImageConverter::ImageConverter()
-{
-	m_Impl = std::make_unique<Impl>();
-}
-
-ImageConverter::~ImageConverter()
-{
-	if (m_Impl->sws)
-		sws_freeContext(m_Impl->sws);
-}
-
-bool ImageConverter::Convert(const Frame& source, Frame& destination)
-{
-	// Typical camera formats are, YUV420P, NV12, YUV422. Nobody wants to process those directly.
-	// Instead we'll ask FFmpeg to convert the frame into RGB24. That's the purpose of libswscale.
-
-	AVFrame* src = source.m_Impl->frame;
-	AVFrame* dst = destination.m_Impl->frame;
-
-	if (!src || !src->data[0])
-		return false;
-
-	//----------------------------------------------------------
-	// Rebuild converter if source format changes
-	//----------------------------------------------------------
-
-	if (m_Impl->sws == nullptr ||
-		m_Impl->width        != src->width ||
-		m_Impl->height       != src->height ||
-		m_Impl->sourceFormat != (AVPixelFormat)src->format)
-	{
-		if (m_Impl->sws)
-			sws_freeContext(m_Impl->sws);
-
-		m_Impl->sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format,
-									 src->width, src->height, AV_PIX_FMT_RGB24, SWS_BILINEAR,
-									 nullptr, nullptr, nullptr);
-
-		if (!m_Impl->sws)
-			return false;
-
-		m_Impl->width = src->width;
-		m_Impl->height = src->height;
-		m_Impl->sourceFormat = (AVPixelFormat)src->format;
-	}
-
-	//----------------------------------------------------------
-	// Allocate destination frame if necessary
-	//----------------------------------------------------------
-
-	if (dst->width  != src->width ||
-		dst->height != src->height ||
-		dst->format != AV_PIX_FMT_RGB24 ||
-		dst->data[0] == nullptr)
-	{
-		av_frame_unref(dst);
-
-		dst->format = AV_PIX_FMT_RGB24;
-		dst->width  = src->width;
-		dst->height = src->height;
-
-		if (av_frame_get_buffer(dst, 32) < 0)
-			return false;
-	}
-
-	//----------------------------------------------------------
-	// Convert
-	//----------------------------------------------------------
-
-	sws_scale(m_Impl->sws, src->data, src->linesize, 0, src->height, dst->data, dst->linesize);
-
-	return true;
-}
 
 Frame::Frame()
 {
@@ -153,8 +71,92 @@ const char* Frame::PixelFormatName() const
 	return av_get_pix_fmt_name((AVPixelFormat)m_Impl->frame->format);
 }
 
+//####################################################################################################################################
 
-//##################################################################
+class ImageConverter::Impl
+{
+public:
+	SwsContext* sws = nullptr;
+	int width = 0;
+	int height = 0;
+	AVPixelFormat sourceFormat = AV_PIX_FMT_NONE;
+};
+
+ImageConverter::ImageConverter()
+{
+	m_Impl = std::make_unique<Impl>();
+}
+
+ImageConverter::~ImageConverter()
+{
+	if (m_Impl->sws)
+		sws_freeContext(m_Impl->sws);
+}
+
+bool ImageConverter::Convert(const Frame& source, Frame& destination)
+{
+	// Typical camera formats are, YUV420P, NV12, YUV422. Nobody wants to process those directly.
+	// Instead we'll ask FFmpeg to convert the frame into RGB24. That's the purpose of libswscale.
+
+	AVFrame* src = source.m_Impl->frame;
+	AVFrame* dst = destination.m_Impl->frame;
+
+	if (!src || !src->data[0])
+		return false;
+
+	//----------------------------------------------------------
+	// Rebuild converter if source format changes
+	//----------------------------------------------------------
+
+	if (m_Impl->sws == nullptr ||
+		m_Impl->width        != src->width ||
+		m_Impl->height       != src->height ||
+		m_Impl->sourceFormat != (AVPixelFormat)src->format)
+	{
+		if (m_Impl->sws)
+			sws_freeContext(m_Impl->sws);
+
+		// Create the RGB converter. This object performs the colour conversion.
+		m_Impl->sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format,
+									 src->width, src->height, AV_PIX_FMT_RGB24, SWS_BILINEAR,
+									 nullptr, nullptr, nullptr);
+		if (!m_Impl->sws)
+			return false;
+
+		m_Impl->width = src->width;
+		m_Impl->height = src->height;
+		m_Impl->sourceFormat = (AVPixelFormat)src->format;
+	}
+
+	//----------------------------------------------------------
+	// Allocate destination frame if necessary
+	//----------------------------------------------------------
+
+	if (dst->width  != src->width ||
+		dst->height != src->height ||
+		dst->format != AV_PIX_FMT_RGB24 ||
+		dst->data[0] == nullptr)
+	{
+		av_frame_unref(dst);
+
+		dst->format = AV_PIX_FMT_RGB24;
+		dst->width  = src->width;
+		dst->height = src->height;
+
+		if (av_frame_get_buffer(dst, 32) < 0)
+			return false;
+	}
+
+	//----------------------------------------------------------
+	// Convert
+	//----------------------------------------------------------
+
+	sws_scale(m_Impl->sws, src->data, src->linesize, 0, src->height, dst->data, dst->linesize);
+
+	return true;
+}
+
+//####################################################################################################################################
 
 class Camera::Impl
 {
@@ -219,7 +221,26 @@ void Camera::GetVideoInfo()
 
 bool Camera::Open(const std::string& url)
 {
-	if (avformat_open_input(&m_Impl->formatContext, url.c_str(), nullptr, nullptr) != 0)
+	AVDictionary* options = nullptr;
+	bool isRtsp = (url.rfind("rtsp://", 0) == 0);
+	if (isRtsp)
+	{
+		// Use TCP instead of UDP. RTSP can transport video over UDP (lower latency) or TCP (more reliable). For cameras on a home network, I recommend TCP.
+		av_dict_set(&options, "rtsp_transport", "tcp", 0);
+		// If the camera is unplugged, I don't want Open() to hang for a long time. (5,000,000 microseconds = 5 seconds).
+		// If the camera is on a local network, 5 seconds is plenty of time to wait for a response. If the camera is on the internet, you may want to increase this timeout.
+		// Some newer FFmpeg builds use "timeout" instead of "stimeout", but if your build accepts stimeout, that's fine.
+		av_dict_set(&options, "stimeout", "5000000", 0);
+		// Increase the receive buffer, this is a 1 MB network buffer.
+		av_dict_set(&options, "buffer_size", "1048576", 0);
+	}
+
+	int result = avformat_open_input(&m_Impl->formatContext, url.c_str(), nullptr, &options);
+
+	// Free the dictionary.
+	av_dict_free(&options);
+
+	if (result < 0)
 	{
 		return false;
 	}
@@ -299,6 +320,14 @@ const Frame& Camera::CurrentFrame() const
 
 bool Camera::Grab()
 {
+	// For an MP4, reaching end-of-file means Grab() returns false.
+	// For an RTSP stream, there is no end-of-file. Instead, av_read_frame() might fail temporarily because of a network hiccup.
+	// To do:
+	// make Grab() distinguish between:
+	// End of file (for local files).
+	// Temporary network errors (for RTSP), where it can retry instead of immediately giving up.
+	// (I'll leave it until I actually see a stream interruption).
+
 	while (av_read_frame(m_Impl->formatContext, m_Impl->packet) >= 0)
 	{
 		if (m_Impl->packet->stream_index != m_Impl->videoStream)
@@ -325,28 +354,16 @@ bool Camera::Grab()
 			return true;
 		}
 	}
-
 	return false;
 }
 
 
 
 /*
-
-// Create the RGB converter.
-// This object performs the colour conversion. It only has to be created once.
-m_Impl->swsContext = sws_getContext(codecPar->width, codecPar->height, m_Impl->codecContext->pix_fmt,
-codecPar->width, codecPar->height, AV_PIX_FMT_RGB24, SWS_BILINEAR,
-nullptr, nullptr, nullptr);
-
-// Allocate an RGB frame.
-m_Impl->rgbFrame = av_frame_alloc();
-
-// Now allocate storage for it.
+// allocate storage for it.
 int size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
 m_Impl->rgbBuffer = new uint8_t[size];
 
 // and attach it to the RGB frame.
 av_image_fill_arrays(m_Impl->rgbFrame->data, m_Impl->rgbFrame->linesize, m_Impl->rgbBuffer, AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
-
 */

@@ -6,18 +6,14 @@
 
 
 /*
-If copying were allowed, this would compile:
+(@@@) If copying were allowed, this would compile:
 Frame a;
 Frame b = a;
 
 But what should that mean?
 
 Should it:
-Copy the AVFrame?
-Share the AVFrame?
-Duplicate the image buffer?
-Just copy the pointer?
-
+Copy the AVFrame? Share the AVFrame? Duplicate the image buffer? Just copy the pointer?
 There isn't an obvious correct answer.
 
 Without = delete
@@ -29,36 +25,28 @@ Simply to make the intention explicit.
 When someone reads the class, they immediately know:
 "A Frame is a unique owner of an image."
 Are they necessary?
-
-Strictly speaking...No.
-Because std::unique_ptr already prevents copying.
+Strictly speaking...No. Because std::unique_ptr already prevents copying.
 */
 
 class Frame
 {
 public:
-
     Frame();
     ~Frame();
 
-	// These 2 lines tell the compiler: Do not generate a copy constructor or copy assignment operator for this class. If anyone tries to copy a Frame object, it will result in a compile-time error. 
+	// (@@@) These 2 lines tell the compiler: Do not generate a copy constructor or copy assignment operator for this class. If anyone tries to copy a Frame object, it will result in a compile-time error. 
     Frame(const Frame&) = delete;
     Frame& operator=(const Frame&) = delete;
 
     int Width() const;
     int Height() const;
     int Stride() const;
-
     const uint8_t* ScanLine(int y) const;
-
     bool IsValid() const;
-
     int PixelFormat() const;
-
     const char * PixelFormatName() const;
 
 private:
-
     class Impl;
     std::unique_ptr<Impl> m_Impl;
 
@@ -67,11 +55,9 @@ private:
 };
 
 
-
 class ImageConverter
 {
 public:
-
     ImageConverter();
     ~ImageConverter();
 
@@ -81,11 +67,9 @@ public:
     bool Convert(const Frame& source, Frame& destination);
 
 private:
-
     class Impl;
     std::unique_ptr<Impl> m_Impl;
 };
-
 
 
 struct VideoInfo
@@ -100,7 +84,6 @@ struct VideoInfo
 class Camera
 {
 public:
-
 	VideoInfo m_VideoInfo;
 
     Camera();
@@ -113,7 +96,6 @@ public:
     void Close();
 
 private:
-
     // The PImpl Idiom (Pointer to IMPLementation) is a technique used for separating implementation from the interface. It minimizes header exposure.
 	// Fairly pointless for my little project, but I wanted to try it out. It is a good technique for large projects where you want to hide implementation details and reduce compilation dependencies.
     class Impl;     // forward declaration
