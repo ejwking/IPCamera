@@ -8,6 +8,10 @@
 #include "IPCameraDlg.h"
 
 #ifdef _DEBUG
+#include <crtdbg.h>
+#endif
+
+#ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
 
@@ -37,6 +41,13 @@ CIPCameraApp theApp;
 
 BOOL CIPCameraApp::InitInstance()
 {
+
+#ifdef _DEBUG
+	// Put this early in InitInstance / OnInitDialog (before most allocations)
+//	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+//	_CrtSetBreakAlloc(3119); // break when allocation #3119 occurs
+#endif
+
 	// InitCommonControlsEx() is required on Windows XP if an application
 	// manifest specifies use of ComCtl32.dll version 6 or later to enable
 	// visual styles.  Otherwise, any window creation will fail.

@@ -7,6 +7,17 @@
 #include "Camera.h"
 
 
+struct MEMORYDC
+{
+	HBITMAP    hBitmap=nullptr;
+	BITMAPINFO bmi={0};
+	uint8_t	  *pBits=nullptr;
+	CDC        DC;	// or HDC? ..CDC better cos I can use GDI functions using class '->' syntax.
+	int        Wd=0, Ht=0;
+	int        InitBitmap=0, InitDC=0;
+};
+
+
 // CIPCameraDlg dialog
 class CIPCameraDlg : public CDialogEx
 {
@@ -14,7 +25,14 @@ class CIPCameraDlg : public CDialogEx
 public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
-	CDC *m_pDC;
+	CString   m_CameraURL;
+	MEMORYDC  m_Pic;
+	CDC      *m_pDC=nullptr;
+
+	void FreeBitmapObjects(MEMORYDC * pMDC);
+	int  InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht);
+	void RgbFrameDrawTest(const Frame& rgbFrame);
+
 	Camera m_Camera;
 
 // Dialog Data
@@ -22,9 +40,8 @@ public:
 	enum { IDD = IDD_IPCAMERA_DIALOG };
 #endif
 
-	protected:
+protected:
 	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV support
-
 
 // Implementation
 protected:
@@ -35,6 +52,8 @@ protected:
 	afx_msg void OnPaint();
 	afx_msg HCURSOR OnQueryDragIcon();
 	DECLARE_MESSAGE_MAP()
+
 public:
 	afx_msg void OnBnClickedBtnTest();
+	afx_msg void OnDestroy();
 };

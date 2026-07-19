@@ -42,6 +42,7 @@ public:
     int Height() const;
     int Stride() const;
     const uint8_t* ScanLine(int y) const;
+    const uint8_t* Data() const;
     bool IsValid() const;
     int PixelFormat() const;
     const char * PixelFormatName() const;
@@ -64,7 +65,7 @@ public:
     ImageConverter(const ImageConverter&) = delete;
     ImageConverter& operator=(const ImageConverter&) = delete;
 
-    bool Convert(const Frame& source, Frame& destination);
+    bool Convert(const Frame& source, Frame& destination, bool BGR=false);
 
 private:
     class Impl;
