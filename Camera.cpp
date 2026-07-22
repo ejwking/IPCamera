@@ -102,63 +102,47 @@ bool ImageConverter::Convert(const Frame& source, Frame& destination, bool BGR/*
 {
 	// Typical camera formats are, YUV420P, NV12, YUV422. Nobody wants to process those directly.
 	// Instead we'll ask FFmpeg to convert the frame into RGB24. That's the purpose of libswscale.
-
 	AVFrame* src = source.m_Impl->m_frame;
 	AVFrame* dst = destination.m_Impl->m_frame;
 
 	if (!src || !src->data[0])
 		return false;
 
-	//----------------------------------------------------------
 	// Rebuild converter if source format changes
-	//----------------------------------------------------------
-
-	if (m_Impl->m_sws == nullptr ||
-		m_Impl->m_width        != src->width ||
-		m_Impl->m_height       != src->height ||
+	if (m_Impl->m_sws    == nullptr ||
+		m_Impl->m_width  != src->width ||
+		m_Impl->m_height != src->height ||
 		m_Impl->m_sourceFormat != (AVPixelFormat)src->format)
 	{
 		if (m_Impl->m_sws)
 			sws_freeContext(m_Impl->m_sws);
-
 		// Create the RGB converter. This object performs the colour conversion.
-		m_Impl->m_sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format,
-									 src->width, src->height, 
-									 BGR ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_RGB24,
-									 SWS_BILINEAR, nullptr, nullptr, nullptr);
+		m_Impl->m_sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format, src->width, src->height, 
+										BGR ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_RGB24,
+										SWS_BILINEAR, nullptr, nullptr, nullptr);
 		if (!m_Impl->m_sws)
 			return false;
-
 		m_Impl->m_width = src->width;
 		m_Impl->m_height = src->height;
 		m_Impl->m_sourceFormat = (AVPixelFormat)src->format;
 	}
 
-	//----------------------------------------------------------
 	// Allocate destination frame if necessary
-	//----------------------------------------------------------
-
 	if (dst->width  != src->width ||
 		dst->height != src->height ||
 		dst->format != AV_PIX_FMT_RGB24 ||
 		dst->data[0] == nullptr)
 	{
 		av_frame_unref(dst);
-
 		dst->format = AV_PIX_FMT_RGB24;
 		dst->width  = src->width;
 		dst->height = src->height;
-
 		if (av_frame_get_buffer(dst, 32) < 0)
 			return false;
 	}
 
-	//----------------------------------------------------------
 	// Convert
-	//----------------------------------------------------------
-
 	sws_scale(m_Impl->m_sws, src->data, src->linesize, 0, src->height, dst->data, dst->linesize);
-
 	return true;
 }
 
@@ -190,20 +174,15 @@ Camera::~Camera()
 
 void Camera::Close()
 {
+	// Every xxx_alloc() or xxx_open() in Open() should have one matching xxx_free() or xxx_close() in Close().
 	if (m_Impl->m_packet)
-	{
 		av_packet_free(&m_Impl->m_packet);
-	}
-
+	if (m_Impl->m_frame)
+		av_frame_free(&m_Impl->m_frame);
 	if (m_Impl->m_codecContext)
-	{
 		avcodec_free_context(&m_Impl->m_codecContext);
-	}
-
 	if (m_Impl->m_formatContext)
-	{
 		avformat_close_input(&m_Impl->m_formatContext);
-	}
 
 	m_Impl->m_videoStream = -1;
 }
@@ -220,19 +199,14 @@ void Camera::GetVideoInfo()
 	m_VideoInfo.codec_id = codec->codec_id;
 	m_VideoInfo.codecName = desc ? desc->name : "Unknown";
 
-	TRACE("\n\nWidth  : %d   ", m_VideoInfo.width);
-	TRACE("\nHeight : %d   ", m_VideoInfo.height);
-	TRACE("\nCodec ID : %d   ", m_VideoInfo.codec_id);
-	TRACE("\nFPS : %f   ", m_VideoInfo.fps);
-	TRACE("\nCodec : %s   ", m_VideoInfo.codecName.c_str());
+	TRACE("\n\nWidth  : %d\nHeight : %d\nCodec ID : %d\nFPS : %f\nCodec : %s\n     ", m_VideoInfo.width, m_VideoInfo.height, m_VideoInfo.codec_id, m_VideoInfo.fps, m_VideoInfo.codecName.c_str());
 }
 
 bool Camera::Impl::Open(const std::string& url)
 {
 	AVDictionary* options = nullptr;
 	bool isRtsp = (url.rfind("rtsp://", 0) == 0);
-	if (isRtsp)
-	{
+	if (isRtsp){
 		// Use TCP instead of UDP. RTSP can transport video over UDP (lower latency) or TCP (more reliable). For cameras on a home network, I recommend TCP.
 		av_dict_set(&options, "rtsp_transport", "tcp", 0);
 		// If the camera is unplugged, I don't want Open() to hang for a long time. (5,000,000 microseconds = 5 seconds).
@@ -244,66 +218,49 @@ bool Camera::Impl::Open(const std::string& url)
 	}
 
 	int result = avformat_open_input(&m_formatContext, url.c_str(), nullptr, &options);
-
 	// Free the dictionary.
 	av_dict_free(&options);
 
 	if (result < 0)
-	{
 		return false;
-	}
 
 	// This tells FFmpeg to inspect the file (or stream) and discover its contents.
 	if (avformat_find_stream_info(m_formatContext, nullptr) < 0)
-	{
 		return false;
-	}
 
 	// Find the first video stream in the file (or stream).
-	for (unsigned int i = 0; i < m_formatContext->nb_streams; i++)
-	{
+	for (unsigned int i = 0; i < m_formatContext->nb_streams; i++){
 		AVStream* stream = m_formatContext->streams[i];
-		if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO)
-		{
+		if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO){
 			m_videoStream = i;
 			break;
 		}
 	}
 	if (m_videoStream == -1)
-	{
 		return false;
-	}
 
 	// Find the decoder for the video stream.
 	// If the video is H.264, decoder will point to FFmpeg's H.264 decoder, etc etc.
 	AVCodecParameters* codecPar = m_formatContext->streams[m_videoStream]->codecpar;
 	const AVCodec* decoder = avcodec_find_decoder(codecPar->codec_id);
 	if (!decoder)
-	{
 		return false;
-	}
 
 	// Create a decoder context.
 	// Copy codec parameters from the stream to the codec context.
 	// Think of the AVCodecContext as the decoder instance that maintains all the state needed to decode the video.
 	m_codecContext = avcodec_alloc_context3(decoder);
 	if (!m_codecContext)
-	{
 		return false;
-	}
 
 	// Copy the stream parameters.
 	// The stream contains information like - Width, Height, Pixel format, Codec profile. Copy all of that into the decoder context.
 	if (avcodec_parameters_to_context(m_codecContext, codecPar) < 0)
-	{
 		return false;
-	}
 
 	// Open the decoder.
 	if (avcodec_open2(m_codecContext, decoder, nullptr) < 0)
-	{
 		return false;
-	}
 
 	// At this point the decoder is ready.
 	// Allocate the packet and frame, these are reused for every decoded frame.
@@ -311,19 +268,16 @@ bool Camera::Impl::Open(const std::string& url)
 	m_packet = av_packet_alloc();
 	m_frame  = av_frame_alloc();
 	if (!m_packet || !m_frame)
-	{
 		return false;
-	}
+
 	// When Open() returns true, the camera (or file) is completely ready to decode.
 	return true;
 }
 
 bool Camera::Open(const std::string& url)
 {
-	if(m_Impl->m_videoStream == -1)
-	{
-		if(!m_Impl->Open(url))
-		{
+	if (m_Impl->m_videoStream == -1){
+		if (!m_Impl->Open(url)){
 			Close();
 			return false;
 		}
@@ -348,35 +302,22 @@ bool Camera::Grab()
 	// Temporary network errors (for RTSP), where it can retry instead of immediately giving up.
 	// (I'll leave it until I actually see a stream interruption).
 
-	while (av_read_frame(m_Impl->m_formatContext, m_Impl->m_packet) >= 0)
-	{
-		if (m_Impl->m_packet->stream_index != m_Impl->m_videoStream)
-		{
-			av_packet_unref(m_Impl->m_packet);
-			continue;
-		}
-
-		if (avcodec_send_packet(m_Impl->m_codecContext, m_Impl->m_packet) < 0)
-		{
-			av_packet_unref(m_Impl->m_packet);
-			continue;
-		}
+	while (av_read_frame(m_Impl->m_formatContext, m_Impl->m_packet) >= 0){
+		bool Ok = false;
+		if (m_Impl->m_packet->stream_index == m_Impl->m_videoStream)
+			if (avcodec_send_packet(m_Impl->m_codecContext, m_Impl->m_packet) >= 0)
+				Ok = true;
 
 		av_packet_unref(m_Impl->m_packet);
-
-		// so the frame is returned to an empty state before FFmpeg writes the next image into it..
-		av_frame_unref(m_Impl->m_currentFrame.m_Impl->m_frame);
-
-		int result = avcodec_receive_frame(m_Impl->m_codecContext, m_Impl->m_currentFrame.m_Impl->m_frame);
-
-		if (result == 0)
-		{
-			return true;
+		if (Ok){
+			// _unref, so the frame is returned to an empty state before FFmpeg writes the next image into it..
+			av_frame_unref(m_Impl->m_currentFrame.m_Impl->m_frame);
+			if (avcodec_receive_frame(m_Impl->m_codecContext, m_Impl->m_currentFrame.m_Impl->m_frame) == 0)
+				return true;
 		}
 	}
 	return false;
 }
-
 
 
 /*

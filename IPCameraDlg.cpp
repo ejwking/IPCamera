@@ -91,8 +91,7 @@ void CIPCameraDlg::OnDestroy()
 
 void CIPCameraDlg::OnPaint()
 {
-	if (IsIconic())
-	{
+	if (IsIconic()){
 		CPaintDC dc(this); // device context for painting
 
 		SendMessage(WM_ICONERASEBKGND, reinterpret_cast<WPARAM>(dc.GetSafeHdc()), 0);
@@ -108,8 +107,7 @@ void CIPCameraDlg::OnPaint()
 		// Draw the icon
 		dc.DrawIcon(x, y, m_hIcon);
 	}
-	else
-	{
+	else{
 		CDialogEx::OnPaint();
 		m_pDC = this->GetDC();
 	}
@@ -124,8 +122,8 @@ HCURSOR CIPCameraDlg::OnQueryDragIcon()
 
 int CIPCameraDlg::InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht)
 {
-	if(pMemDC->InitDC==0 || pMemDC->InitBitmap==0)
-	{
+	if(pMemDC->InitDC==0 || pMemDC->InitBitmap==0){
+
 		memset(&pMemDC->bmi.bmiHeader, 0, sizeof(pMemDC->bmi.bmiHeader));
 		pMemDC->bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
 		pMemDC->bmi.bmiHeader.biWidth       = Wd;
@@ -136,21 +134,17 @@ int CIPCameraDlg::InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht)
 		void *pBitmapBits;
 		pMemDC->hBitmap = CreateDIBSection(0, &pMemDC->bmi, DIB_RGB_COLORS, &pBitmapBits, 0, 0);
 
-		if(pMemDC->hBitmap)
-		{
+		if(pMemDC->hBitmap){
 			pMemDC->pBits = (uint8_t*)pBitmapBits;
 			pMemDC->InitBitmap = 1;
-			if(pMemDC->DC.CreateCompatibleDC(pDC))
-			{
+			if(pMemDC->DC.CreateCompatibleDC(pDC)){
 				pMemDC->DC.SelectObject(pMemDC->hBitmap);
 				pMemDC->InitDC = 1;
 			}
 		}
 	}
-
 	if(pMemDC->InitDC && pMemDC->InitBitmap)
 		return 1;
-
 	return 0;
 }
 
@@ -164,14 +158,11 @@ void CIPCameraDlg::FreeBitmapObjects(MEMORYDC *pMDC)
 	pMDC->InitBitmap = 0;
 }
 
-FIX MEMORY LEAK
-
 void CIPCameraDlg::OnBnClickedBtnTest()
 {
 	std::string CamURL = Utf16ToUtf8(m_CameraURL.GetString());
 
-	if (!m_Camera.Open(CamURL))
-	{
+	if (!m_Camera.Open(CamURL)){
 		TRACE("\n\nOpen failed\n");
 		return;
 	}
@@ -187,20 +178,19 @@ void CIPCameraDlg::OnBnClickedBtnTest()
 	// threading to go in my library, not in the GUI. The library should be able to run in a console application or a web server without any GUI dependencies. The GUI should just be a thin layer on top of my library.
 
 	while (m_Camera.Grab() 
-		&& frameNumber<10
+		&& frameNumber<200
 		)
 	{
 		frameNumber++;
 
 		const Frame& frame = m_Camera.CurrentFrame();
 
-		if (converter.Convert(frame, rgbFrame, true))
-		{
+		if (converter.Convert(frame, rgbFrame, true)){
 			// rgbFrame now contains RGB24 pixels
 			// TRACE("\nFrame %d   - w %d, h %d, %d, %s  ", frameNumber, rgbFrame.Width(), rgbFrame.Height(), frame.PixelFormat(), frame.PixelFormatName());
 
-			if(InitDisplayDC(m_pDC, &m_Pic, rgbFrame.Width(), rgbFrame.Height()))
-			{
+			if(InitDisplayDC(m_pDC, &m_Pic, rgbFrame.Width(), rgbFrame.Height())){
+
 				memcpy(m_Pic.pBits, rgbFrame.Data(), rgbFrame.Stride() * rgbFrame.Height());
 
 				// do additional drawing on m_Pic.DC here if you want to overlay text or graphics on top of the video frame.
@@ -208,18 +198,16 @@ void CIPCameraDlg::OnBnClickedBtnTest()
 				m_pDC->BitBlt(0, 0, rgbFrame.Width(), rgbFrame.Height(), &m_Pic.DC, 0, 0, SRCCOPY);
 			}
 
-			Sleep(100); // slow down the loop so we can see the frames. In a real application, you would not sleep here, and you would process frames as fast as they come in.
+			Sleep(20); // slow down the loop so we can see the frames. In a real application, you would not sleep here, and you would process frames as fast as they come in.
 		}
 	}
 }
 
 void CIPCameraDlg::RgbFrameDrawTest(const Frame& rgbFrame)
 {
-	for (int y = 0; y < rgbFrame.Height(); y++)
-	{
+	for (int y = 0; y < rgbFrame.Height(); y++){
 		const uint8_t* scanline = rgbFrame.ScanLine(y);
-		for (int x = 0; x < rgbFrame.Width(); x++)
-		{
+		for (int x = 0; x < rgbFrame.Width(); x++){
 			uint8_t r = scanline[x * 3 + 0];
 			uint8_t g = scanline[x * 3 + 1];
 			uint8_t b = scanline[x * 3 + 2];
