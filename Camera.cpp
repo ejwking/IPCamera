@@ -2,8 +2,8 @@
 #include "pch.h"
 #include "Camera.h"
 
-// https://github.com/FFmpeg/FFmpeg/blob/master/doc/examples/demux_decode.c
-
+// FFmpeg headers:
+// ..written in C, so tell the C++ compiler to treat the FFmpeg headers as C code using the extern "C" linkage specification. (It prevents name mangling and allows the C++ code to link correctly with the C functions).
 extern "C"
 {
 	#include <libavformat/avformat.h>
@@ -13,72 +13,74 @@ extern "C"
 	#include <libswscale/swscale.h>
 }
 
+// FFmpeg examples https://github.com/FFmpeg/FFmpeg/blob/master/doc/examples/demux_decode.c
+
 
 //####################################################################################################################################
 
-class Frame::Impl
+class CFrame::Impl
 {
 public:
 	AVFrame* m_frame = nullptr;
 };
 
-Frame::Frame()
+CFrame::CFrame()
 {
 	m_Impl = std::make_unique<Impl>();
 	m_Impl->m_frame = av_frame_alloc();
 }
 
-Frame::~Frame()
+CFrame::~CFrame()
 {
 	if (m_Impl->m_frame)
 		av_frame_free(&m_Impl->m_frame);
 }
 
-bool Frame::IsValid() const
+bool CFrame::IsValid() const
 {
 	return m_Impl->m_frame && m_Impl->m_frame->data[0];
 }
 
-int Frame::Width() const
+int CFrame::Width() const
 {
 	return m_Impl->m_frame->width;
 }
 
-int Frame::Height() const
+int CFrame::Height() const
 {
 	return m_Impl->m_frame->height;
 }
 
-int Frame::Stride() const
+int CFrame::Stride() const
 {
 	return m_Impl->m_frame->linesize[0];
 }
 
-const uint8_t* Frame::ScanLine(int y) const
+const uint8_t* CFrame::ScanLine(int y) const
 {
 	return m_Impl->m_frame->data[0] + y * m_Impl->m_frame->linesize[0];
 }
 
-const uint8_t* Frame::Data() const
+const uint8_t* CFrame::Data() const
 {
 	return m_Impl->m_frame->data[0];
 }
 
-int Frame::PixelFormat() const
+int CFrame::PixelFormat() const
 {
-	// Although it's FFmpeg's pixel format internally, returning it as an int keeps Frame.h free of FFmpeg types, and ImageConverter can cast it back to AVPixelFormat 
+	// Although it's FFmpeg's pixel format internally, returning it as an int keeps Frame.h free of FFmpeg types, and CImageConverter can cast it back to AVPixelFormat 
 	// internally. It's a small compromise that keeps the public header clean while giving us exactly what we need for the next class.
 	return m_Impl->m_frame->format;
 }
 
-const char* Frame::PixelFormatName() const
+const char* CFrame::PixelFormatName() const
 {
 	return av_get_pix_fmt_name((AVPixelFormat)m_Impl->m_frame->format);
 }
 
 //####################################################################################################################################
 
-class ImageConverter::Impl
+class CImageConverter::Impl
 {
 public:
 	SwsContext* m_sws = nullptr;
@@ -87,18 +89,18 @@ public:
 	AVPixelFormat m_sourceFormat = AV_PIX_FMT_NONE;
 };
 
-ImageConverter::ImageConverter()
+CImageConverter::CImageConverter()
 {
 	m_Impl = std::make_unique<Impl>();
 }
 
-ImageConverter::~ImageConverter()
+CImageConverter::~CImageConverter()
 {
 	if (m_Impl->m_sws)
 		sws_freeContext(m_Impl->m_sws);
 }
 
-bool ImageConverter::Convert(const Frame& source, Frame& destination, bool BGR/*=false*/)
+bool CImageConverter::Convert(const CFrame& source, CFrame& destination, bool BGR/*=false*/)
 {
 	// Typical camera formats are, YUV420P, NV12, YUV422. Nobody wants to process those directly.
 	// Instead we'll ask FFmpeg to convert the frame into RGB24. That's the purpose of libswscale.
@@ -148,7 +150,7 @@ bool ImageConverter::Convert(const Frame& source, Frame& destination, bool BGR/*
 
 //####################################################################################################################################
 
-class Camera::Impl
+class CCamera::Impl
 {
 public:
 	AVFormatContext* m_formatContext = nullptr;
@@ -156,23 +158,24 @@ public:
 	AVPacket* m_packet = nullptr;
 	AVFrame* m_frame = nullptr;
 	int m_videoStream = -1;
-	Frame m_currentFrame;
+	CFrame m_currentFrame;
 
+	// hide the implementation methods, not just data. Otherwise even though it could be private in CCamera, this helper function would be in the public interface of CCamera.
+	// CCamera class should remain clean and focused on its public interface.
 	bool Open(const std::string & url);
 };
 
-Camera::Camera()
+CCamera::CCamera()
 {
-	m_Impl = new Impl;
+	m_Impl = std::make_unique<Impl>();
 }
 
-Camera::~Camera()
+CCamera::~CCamera()
 {
 	Close();
-	delete m_Impl;
 }
 
-void Camera::Close()
+void CCamera::Close()
 {
 	// Every xxx_alloc() or xxx_open() in Open() should have one matching xxx_free() or xxx_close() in Close().
 	if (m_Impl->m_packet)
@@ -187,7 +190,7 @@ void Camera::Close()
 	m_Impl->m_videoStream = -1;
 }
 
-void Camera::GetVideoInfo()
+void CCamera::GetVideoInfo()
 {
 	AVStream* stream = m_Impl->m_formatContext->streams[m_Impl->m_videoStream];
 	AVCodecParameters* codec = stream->codecpar;
@@ -199,10 +202,11 @@ void Camera::GetVideoInfo()
 	m_VideoInfo.codec_id = codec->codec_id;
 	m_VideoInfo.codecName = desc ? desc->name : "Unknown";
 
+	// temp, remove this, TRACE shouldnt be in here.
 	TRACE("\n\nWidth  : %d\nHeight : %d\nCodec ID : %d\nFPS : %f\nCodec : %s\n     ", m_VideoInfo.width, m_VideoInfo.height, m_VideoInfo.codec_id, m_VideoInfo.fps, m_VideoInfo.codecName.c_str());
 }
 
-bool Camera::Impl::Open(const std::string& url)
+bool CCamera::Impl::Open(const std::string& url)
 {
 	AVDictionary* options = nullptr;
 	bool isRtsp = (url.rfind("rtsp://", 0) == 0);
@@ -274,7 +278,7 @@ bool Camera::Impl::Open(const std::string& url)
 	return true;
 }
 
-bool Camera::Open(const std::string& url)
+bool CCamera::Open(const std::string& url)
 {
 	if (m_Impl->m_videoStream == -1){
 		if (!m_Impl->Open(url)){
@@ -287,12 +291,12 @@ bool Camera::Open(const std::string& url)
 	return true;
 }
 
-const Frame& Camera::CurrentFrame() const
+const CFrame& CCamera::CurrentFrame() const
 {
 	return m_Impl->m_currentFrame;
 }
 
-bool Camera::Grab()
+bool CCamera::Grab()
 {
 	// For an MP4, reaching end-of-file means Grab() returns false.
 	// For an RTSP stream, there is no end-of-file. Instead, av_read_frame() might fail temporarily because of a network hiccup.
@@ -319,7 +323,6 @@ bool Camera::Grab()
 	return false;
 }
 
-
 /*
 // allocate storage for it.
 int size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
@@ -328,3 +331,95 @@ m_Impl->m_rgbBuffer = new uint8_t[size];
 // and attach it to the RGB frame.
 av_image_fill_arrays(m_Impl->m_rgbFrame->data, m_Impl->m_rgbFrame->linesize, m_Impl->m_rgbBuffer, AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
 */
+
+//####################################################################################################################################
+
+bool CCameraThread::UpdateSharedFrame(const CFrame& frame, CImageConverter& converter)
+{
+	// ## Mutex ##
+	// lock()     - Locks the mutex. If the mutex is already locked by another thread, the calling thread blocks until the lock becomes available.
+	// unlock()   - Unlocks the mutex, allowing waiting threads to acquire it.
+	// try_lock() - Tries to lock the mutex without blocking. It returns true if the lock was successfully acquired, and false otherwise.
+
+	// Calling lock() and unlock() manually is dangerous because exceptions or early returns can cause the mutex to remain locked forever, leading to a deadlock. 
+	// Always use RAII wrappers like std::lock_guard or std::scoped_lock to automatically release the lock when the scope ends.
+	std::lock_guard<std::mutex> lock(m_SharedFrameMutex);
+
+	if (converter.Convert(frame, m_SharedRGBFrame, true)){
+		// m_SharedRGBFrame now contains RGB24 pixels
+		// TRACE("\nFrame %d   - w %d, h %d, %d, %s  ", frameNumber, m_SharedRGBFrame.Width(), m_SharedRGBFrame.Height(), frame.PixelFormat(), frame.PixelFormatName());
+		return true;
+	}
+	return false;
+}
+
+/*
+need method of signalling, dont bother refreshing the frame until the last frame has been processed. 
+   ..maybe a std::atomic<int> counter or flag ???????
+
+also unlike chatGPT,the GUI will have to have its own coding with m_SharedFrameMutex,it cant be method here cos no GUI framework in this library. 
+*/
+
+sequence..
+
+1) cam thread locks mutex and writes the shared frame.
+
+2) callback function is called and GUI implementation calls ...
+PostMessage(hwnd, WM_APP + 1, 0, 0); 
+new frame ready message
+
+3) when the GUI thread receives the message,it locks the mutex and reads the shared frame.
+
+HOWEVER.
+I want a flag to say shared frame has been used by the GUI so the camera thread doesnt write any any more frames if the GUI isnt keeping up.
+
+m_SharedRGBFrame should be a ring buffer of 2 or 3 frames, so the camera thread can write to the next frame while the GUI is reading the previous frame.
+This way the camera thread never blocks waiting for the GUI to finish reading the frame.
+
+
+void CCameraThread::Start()
+{
+	CCamera Cam;
+
+	if (!Cam.Open(m_CamURL)){
+		m_ErrorLog += "\n Open failed \n";
+		return;
+	}
+
+	CImageConverter converter;
+
+	int Counter = 0;
+	while (!m_stop){
+
+		// Grab will naturally block waiting for the next frame.
+		if (!Cam.Grab()){
+			// Lost stream?
+			m_ErrorLog += "\n Grab failed \n";
+			break;
+			// alternatively, sleep for a while - std::this_thread::sleep_for(std::chrono::seconds(1));
+			// and attempt reconnect.
+		}
+
+		// need method of allowing it to drop frames if the GUI plus any image processing is too slow ?  ##########
+
+		const CFrame& frame = Cam.CurrentFrame();
+		if (UpdateSharedFrame(frame, converter)){
+
+			// instead of calling InvalidateRect, can we call a callback function so the GUI can define the display update method? 
+			// This way the library does not depend on MFC or any GUI framework. The library should be able to run in a console application or a web server without any GUI dependencies. 
+			//	InvalidateRect(hwnd, nullptr, FALSE);
+
+			if(m_frameReadyCallback)
+				m_frameReadyCallback(Counter++, 0);
+		}
+	}
+}
+
+
+/*	for(int i=0; i<10; i++){
+TRACE("\n Thread 3 executing \n");
+++n;
+if(m_frameReadyCallback)
+m_frameReadyCallback(i, 0);
+std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}*/

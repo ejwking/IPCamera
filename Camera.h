@@ -3,12 +3,12 @@
 
 #include <string>
 #include <memory>
-
+#include <mutex>
 
 /*
 (@@@) If copying were allowed, this would compile:
-Frame a;
-Frame b = a;
+CFrame a;
+CFrame b = a;
 
 But what should that mean?
 
@@ -18,25 +18,25 @@ There isn't an obvious correct answer.
 
 Without = delete
 The compiler would try to generate copy operations automatically.
-Because Frame contains a std::unique_ptr, the copy constructor is actually already deleted by the compiler.
+Because CFrame contains a std::unique_ptr, the copy constructor is actually already deleted by the compiler.
 So this wouldn't compile anyway.
 So why did I write them?
 Simply to make the intention explicit.
 When someone reads the class, they immediately know:
-"A Frame is a unique owner of an image."
+"A CFrame is a unique owner of an image."
 Are they necessary?
 Strictly speaking...No. Because std::unique_ptr already prevents copying.
 */
 
-class Frame
+class CFrame
 {
 public:
-    Frame();
-    ~Frame();
+    CFrame();
+    ~CFrame();
 
-	// (@@@) These 2 lines tell the compiler: Do not generate a copy constructor or copy assignment operator for this class. If anyone tries to copy a Frame object, it will result in a compile-time error. 
-    Frame(const Frame&) = delete;
-    Frame& operator=(const Frame&) = delete;
+	// (@@@) These 2 lines tell the compiler: Do not generate a copy constructor or copy assignment operator for this class. If anyone tries to copy a CFrame object, it will result in a compile-time error. 
+    CFrame(const CFrame&) = delete;
+    CFrame& operator=(const CFrame&) = delete;
 
     int Width() const;
     int Height() const;
@@ -51,25 +51,25 @@ private:
     class Impl;
     std::unique_ptr<Impl> m_Impl;
 
-    friend class Camera;
-    friend class ImageConverter;
+    friend class CCamera;
+    friend class CImageConverter;
 };
 
 
-class ImageConverter
+class CImageConverter
 {
 public:
-    ImageConverter();
-    ~ImageConverter();
+    CImageConverter();
+    ~CImageConverter();
 
-    ImageConverter(const ImageConverter&) = delete;
-    ImageConverter& operator=(const ImageConverter&) = delete;
+    CImageConverter(const CImageConverter&) = delete;
+    CImageConverter& operator=(const CImageConverter&) = delete;
 
-    bool Convert(const Frame& source, Frame& destination, bool BGR=false);
+    bool Convert(const CFrame& source, CFrame& destination, bool BGR=false);
 
 private:
     class Impl;
-    std::unique_ptr<Impl> m_Impl;
+	std::unique_ptr<Impl> m_Impl;
 };
 
 
@@ -82,23 +82,85 @@ struct VideoInfo
 };
 
 
-class Camera
+class CCamera
 {
 public:
 	VideoInfo m_VideoInfo;
 
-    Camera();
-    ~Camera();
+    CCamera();
+    ~CCamera();
 
     void GetVideoInfo();
     bool Open(const std::string& url);
     bool Grab();
-    const Frame& CurrentFrame() const;
+    const CFrame& CurrentFrame() const;
     void Close();
 
 private:
     // The PImpl Idiom (Pointer to IMPLementation) is a technique used for separating implementation from the interface. It minimizes header exposure.
-	// Fairly pointless for my little project, but I wanted to try it out. It is a good technique for large projects where you want to hide implementation details and reduce compilation dependencies.
-    class Impl;     // forward declaration
-    Impl* m_Impl;   // hide impl details
+	// Maybe pointless for my little project, but I wanted to try it out. It is a good technique for large projects where you want to hide implementation details and reduce compilation dependencies.
+    class Impl; // forward declaration
+    std::unique_ptr<Impl> m_Impl;   // hide impl details
+	// The unique_ptr will automatically manage the memory of the implementation object, ensuring proper cleanup when the CImageConverter object is destroyed. (m_Impl = std::make_unique<Impl>() must be called in the constructor of CCamera).
+    // Also unique_ptr cannot be copied (can only be moved), which is consistent with the design of the CImageConverter class, which is not copyable.
+};
+
+
+/* Architecture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CCameraThread
+│
+▼
+Grab()
+│
+▼
+Convert to RGB
+│
+▼
+Store latest frame
+│
+▼
+GUI 'frame ready' callback 
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CCameraThread
+    lock
+        update frame
+    unlock
+
+GUI thread
+    lock
+        draw frame
+    unlock
+
+The lock should be held for the shortest possible time.
+A simple std::mutex is the correct tool here.
+I would not use std::atomic for the frame itself. Atomics are great for simple values like: std::atomic<bool> stop;
+They are not suitable for protecting a complex object like a video frame.
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+class CCameraThread
+{
+public:
+    void Start();
+
+	
+    std::mutex m_SharedFrameMutex;
+    CFrame m_SharedRGBFrame;    // Declared once for reuse, and shared between camera thread and GUI thread.
+
+
+	std::string m_ErrorLog;
+
+	std::string m_CamURL;
+
+	std::atomic<bool> m_stop{false}; // ????  i dont see why this needs to be atomic, but it is a good habit to use atomic for shared variables between threads. It will prevent data races.
+
+	void (*m_frameReadyCallback)(int, int) = nullptr;
+
+private:
+    bool UpdateSharedFrame(const CFrame& frame, CImageConverter& converter);
 };

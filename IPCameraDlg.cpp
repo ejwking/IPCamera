@@ -6,6 +6,7 @@
 #include "IPCamera.h"
 #include "IPCameraDlg.h"
 #include "afxdialogex.h"
+#include <thread>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -158,32 +159,81 @@ void CIPCameraDlg::FreeBitmapObjects(MEMORYDC *pMDC)
 	pMDC->InitBitmap = 0;
 }
 
+
+
+
+// good examples here https://en.cppreference.com/cpp/thread/thread/thread
+	/*	for (int i = 0; i < 5; ++i)		{
+			TRACE("\n Thread 3 executing \n");
+			++n;
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		}*/
+
+/*
+How to trigger painting
+You have two good options.
+
+Option 1 (my preference)
+
+Call:
+InvalidateRect(hwnd, nullptr, FALSE);
+from the camera thread.
+
+Windows posts a WM_PAINT when appropriate. If several frames arrive before painting occurs, Windows coalesces the invalidations, so you don't end up with hundreds of paint messages queued.
+
+Option 2
+
+Post your own message:
+PostMessage(hwnd, WM_APP + 1, 0, 0);
+
+and in the handler call:
+InvalidateRect(...);
+
+This is useful if you later want to pass other information to the GUI thread.
+*/
+
+
+void FrameReadyCallback(int frameNumber, int otherParam)
+{
+	// remember, this is called from the camera thread, not the GUI thread. So you cannot call any GUI functions here. You can only set flags or post messages to the GUI thread.
+	TRACE("\n FrameReadyCallback %d \n", frameNumber);
+}
+
+
 void CIPCameraDlg::OnBnClickedBtnTest()
 {
+
 	std::string CamURL = Utf16ToUtf8(m_CameraURL.GetString());
 
-	if (!m_Camera.Open(CamURL)){
+	m_CamThread.m_CamURL = CamURL;
+	m_CamThread.m_frameReadyCallback = FrameReadyCallback;
+
+	std::thread t1(&CCameraThread::Start, &m_CamThread); // t5 runs foo::bar() on object f
+	
+
+	// wont be using this..
+	t1.join(); // Wait for the thread to finish before continuing
+
+
+
+
+	/*
+	if (!Cam.Open(CamURL)){
 		TRACE("\n\nOpen failed\n");
 		return;
 	}
 
 	int frameNumber = 0;
-	ImageConverter converter;
-	Frame rgbFrame;	// do not declare in loop as it will allocate memory every time in the constructor. Declare it here and reuse.
+	CImageConverter converter;
+	CFrame rgbFrame;	// do not declare in loop as it will allocate memory every time in the constructor. Declare it here and reuse.
 
-	// To do:
-	// The Grab() function is a blocking call. It will not return until a frame is available, or the stream ends. 
-	// run this in a separate thread, use std::thread to run the Grab() loop in a background thread. (dont use MFC's AfxBeginThread()) 
-
-	// threading to go in my library, not in the GUI. The library should be able to run in a console application or a web server without any GUI dependencies. The GUI should just be a thin layer on top of my library.
-
-	while (m_Camera.Grab() 
+	while (Cam.Grab() 
 		&& frameNumber<200
 		)
 	{
 		frameNumber++;
 
-		const Frame& frame = m_Camera.CurrentFrame();
+		const CFrame& frame = Cam.CurrentFrame();
 
 		if (converter.Convert(frame, rgbFrame, true)){
 			// rgbFrame now contains RGB24 pixels
@@ -201,9 +251,10 @@ void CIPCameraDlg::OnBnClickedBtnTest()
 			Sleep(20); // slow down the loop so we can see the frames. In a real application, you would not sleep here, and you would process frames as fast as they come in.
 		}
 	}
+	*/
 }
 
-void CIPCameraDlg::RgbFrameDrawTest(const Frame& rgbFrame)
+void CIPCameraDlg::RgbFrameDrawTest(const CFrame& rgbFrame)
 {
 	for (int y = 0; y < rgbFrame.Height(); y++){
 		const uint8_t* scanline = rgbFrame.ScanLine(y);
