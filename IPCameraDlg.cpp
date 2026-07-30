@@ -179,12 +179,13 @@ Call:
 InvalidateRect(hwnd, nullptr, FALSE);
 from the camera thread.
 
-Windows posts a WM_PAINT when appropriate. If several frames arrive before painting occurs, Windows coalesces the invalidations, so you don't end up with hundreds of paint messages queued.
+Windows posts a WM_PAINT when appropriate. If several frames arrive before painting occurs, Windows 
+coalesces the invalidations, so you don't end up with hundreds of paint messages queued.
 
 Option 2
 
 Post your own message:
-PostMessage(hwnd, WM_APP + 1, 0, 0);
+PostMessage(hwnd, WM_APP + 1, 0, 0);  - ########### USE THIS BECAUSE I DONT WANT FRAMES COALESCED ????   THE PRODUCER THREAD WILL DROP FRAMES IF WE NOT KEEPING UP ??????????????
 
 and in the handler call:
 InvalidateRect(...);
@@ -192,6 +193,19 @@ InvalidateRect(...);
 This is useful if you later want to pass other information to the GUI thread.
 */
 
+void GetNextCallback(const CFrame& rgbFrame)
+{
+	/*
+	if(InitDisplayDC(m_pDC, &m_Pic, rgbFrame.Width(), rgbFrame.Height())){
+
+		memcpy(m_Pic.pBits, rgbFrame.Data(), rgbFrame.Stride() * rgbFrame.Height());
+
+		// do additional drawing on m_Pic.DC here if you want to overlay text or graphics on top of the video frame.
+
+		m_pDC->BitBlt(0, 0, rgbFrame.Width(), rgbFrame.Height(), &m_Pic.DC, 0, 0, SRCCOPY);
+	}
+	*/
+}
 
 void FrameReadyCallback(int frameNumber, int otherParam)
 {
@@ -207,6 +221,7 @@ void CIPCameraDlg::OnBnClickedBtnTest()
 
 	m_CamThread.m_CamURL = CamURL;
 	m_CamThread.m_frameReadyCallback = FrameReadyCallback;
+	m_CamThread.m_GetNextCallback = GetNextCallback;
 
 	std::thread t1(&CCameraThread::Start, &m_CamThread); // t5 runs foo::bar() on object f
 	

@@ -296,6 +296,13 @@ const CFrame& CCamera::CurrentFrame() const
 	return m_Impl->m_currentFrame;
 }
 
+/* allocate storage for it.
+int size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
+m_Impl->m_rgbBuffer = new uint8_t[size];
+
+// and attach it to the RGB frame.
+av_image_fill_arrays(m_Impl->m_rgbFrame->data, m_Impl->m_rgbFrame->linesize, m_Impl->m_rgbBuffer, AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1); */
+
 bool CCamera::Grab()
 {
 	// For an MP4, reaching end-of-file means Grab() returns false.
@@ -323,73 +330,110 @@ bool CCamera::Grab()
 	return false;
 }
 
-/*
-// allocate storage for it.
-int size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
-m_Impl->m_rgbBuffer = new uint8_t[size];
+/*####################################################################################################################################
+* 
+In std::atomic, Read-Modify-Write (RMW) operations are atomic, indivisible operations that read a value from a memory location, modify it (via an operation), and write the new value back in a single step.
+Unlike ordinary non-atomic increments (like x++) which compile down to separate machine instructions for loading, changing, and saving memory, an RMW operation guarantees that no other thread can interleave 
+or modify the variable between the read and the write steps. Furthermore, RMW operations are unique because they are guaranteed to always operate on the absolute latest value in the modification order of 
+that atomic variable, forcing write propagation across CPU cores. 
+ 
+Use std::atomic for simple, independent variables like single flags or counters, and use std::mutex when you need to protect multiple variables, complex objects, or multi-step operations.
 
-// and attach it to the RGB frame.
-av_image_fill_arrays(m_Impl->m_rgbFrame->data, m_Impl->m_rgbFrame->linesize, m_Impl->m_rgbBuffer, AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
-*/
+Memory Order TagBehavior When Applied to an RMW Operation :
 
-//####################################################################################################################################
+memory_order_relaxed - Guarantees atomicity and the RMW latest-value rule, but adds no synchronization barriers for surrounding non-atomic memory variables.
+memory_order_acquire - Prevents subsequent read/write operations in the local thread from being reordered before this RMW step.
+memory_order_release - Prevents preceding read/write operations in the local thread from being reordered after this RMW step.
+memory_order_acq_rel - Serves as both an acquire barrier (for the read portion) and a release barrier (for the write portion).
+memory_order_seq_cst - Imposes acq_rel behaviors and enforces a single, globally uniform order of all sequentially consistent operations across all threads.
 
-bool CCameraThread::UpdateSharedFrame(const CFrame& frame, CImageConverter& converter)
+When to Use std::atomic
+  Simple Flags and Counters: Best for scalar values like a boolean run-state flag or an integer counter. “Use std::atomic for POD types that can leverage CPU atomic instructions for efficiency, and std::mutex for non-POD types.”
+  Lock-Free Performance: Avoids putting threads to sleep, reducing heavy OS-level scheduling overhead for basic operations.
+  Low Contention: Great for high-frequency reads and writes on isolated variables where locking a full mutex would slow down the program.
+
+When to Use std::mutex
+  Multiple Variables: Essential when two or more variables must change together to keep your data in a valid state (maintaining invariants).
+  Complex Logic: Required if your code block contains multiple instructions or conditions that must execute together without interruption from other threads.
+  Non-Trivial Objects: Safer and more practical for heavy data structures like vectors, maps, or custom classes where atomic instructions are not supported or practical.
+
+  lock()     - Locks the mutex. If the mutex is already locked by another thread, the calling thread blocks until the lock becomes available.
+  unlock()   - Unlocks the mutex, allowing waiting threads to acquire it.
+  try_lock() - Tries to lock the mutex without blocking. It returns true if the lock was successfully acquired, and false otherwise.
+
+  Calling lock() and unlock() manually is dangerous because exceptions or early returns can cause the mutex to remain locked forever, leading to a deadlock. 
+  Always use RAII wrappers like std::lock_guard or std::scoped_lock to automatically release the lock when the scope ends. 
+  (eg, std::lock_guard<std::mutex> lock(m_SharedFrames[m_HeadIndex].mtx); )
+
+//####################################################################################################################################*/
+
+void CCameraThread::GetNextFrame()
 {
-	// ## Mutex ##
-	// lock()     - Locks the mutex. If the mutex is already locked by another thread, the calling thread blocks until the lock becomes available.
-	// unlock()   - Unlocks the mutex, allowing waiting threads to acquire it.
-	// try_lock() - Tries to lock the mutex without blocking. It returns true if the lock was successfully acquired, and false otherwise.
+	// This function to be called in GUI message loop in response to PostMessage or 
+	// InvalidateRect (which would have been instigated by m_frameReadyCallback).
 
-	// Calling lock() and unlock() manually is dangerous because exceptions or early returns can cause the mutex to remain locked forever, leading to a deadlock. 
-	// Always use RAII wrappers like std::lock_guard or std::scoped_lock to automatically release the lock when the scope ends.
-	std::lock_guard<std::mutex> lock(m_SharedFrameMutex);
+	if (m_NumFrames.load(std::memory_order_acquire) > 0){
 
-	if (converter.Convert(frame, m_SharedRGBFrame, true)){
-		// m_SharedRGBFrame now contains RGB24 pixels
-		// TRACE("\nFrame %d   - w %d, h %d, %d, %s  ", frameNumber, m_SharedRGBFrame.Width(), m_SharedRGBFrame.Height(), frame.PixelFormat(), frame.PixelFormatName());
-		return true;
+		// -------------------------
+		// read frame at m_TailIndex
+		// -------------------------
+
+		// CALLBACK for GUI specific code.
+		if (m_GetNextCallback)
+			m_GetNextCallback(m_SharedFrames[m_TailIndex]);
+
+		m_TailIndex++;
+		if (m_TailIndex == MAX_FRAMES)
+			m_TailIndex = 0;	// ring buffer - wraparound back to start.
+
+		// Release the Frame back to producer by decrementing m_NumFrames.
+		m_NumFrames.fetch_sub(1, std::memory_order_release);
 	}
-	return false;
 }
 
-/*
-need method of signalling, dont bother refreshing the frame until the last frame has been processed. 
-   ..maybe a std::atomic<int> counter or flag ???????
+bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& converter)
+{
+	if (m_NumFrames.load(std::memory_order_acquire) < MAX_FRAMES){
+		
+		// --------------------------
+		// write frame at m_HeadIndex
+		// --------------------------
 
-also unlike chatGPT,the GUI will have to have its own coding with m_SharedFrameMutex,it cant be method here cos no GUI framework in this library. 
-*/
+		if (!converter.Convert(frame, m_SharedFrames[m_HeadIndex], true)){
+			m_ErrorLog += "\n convert to rgb failed \n";
+			return false;
+		}
 
-sequence..
+		m_HeadIndex++;
+		if (m_HeadIndex == MAX_FRAMES)
+			m_HeadIndex = 0;	// ring buffer - wraparound back to start.
 
-1) cam thread locks mutex and writes the shared frame.
-
-2) callback function is called and GUI implementation calls ...
-PostMessage(hwnd, WM_APP + 1, 0, 0); 
-new frame ready message
-
-3) when the GUI thread receives the message,it locks the mutex and reads the shared frame.
-
-HOWEVER.
-I want a flag to say shared frame has been used by the GUI so the camera thread doesnt write any any more frames if the GUI isnt keeping up.
-
-m_SharedRGBFrame should be a ring buffer of 2 or 3 frames, so the camera thread can write to the next frame while the GUI is reading the previous frame.
-This way the camera thread never blocks waiting for the GUI to finish reading the frame.
-
+		// Publish the completed frame by incrementing m_NumFrames.
+		m_NumFrames.fetch_add(1, std::memory_order_release);
+	}
+	else {
+		// Frame dropped - The head has wrapped around the circular buffer and caught the 
+		// tail, in other words the list is full, the consumer thread isnt keeping up.
+	}
+	return true; 
+}
 
 void CCameraThread::Start()
 {
+	// Need proper error reporting for when thread exits unexpectedly.
 	CCamera Cam;
-
 	if (!Cam.Open(m_CamURL)){
 		m_ErrorLog += "\n Open failed \n";
 		return;
 	}
 
-	CImageConverter converter;
+	m_HeadIndex = 0;	// Head = next slot the producer will write.
+	m_TailIndex = 0;	// Tail = next slot the consumer will read.
+	m_NumFrames.store(0, std::memory_order_relaxed);	// NumFrames = number of completed frames currently in the buffer.
 
+	CImageConverter converter;
 	int Counter = 0;
-	while (!m_stop){
+	while (!m_stop.load(std::memory_order_relaxed)){
 
 		// Grab will naturally block waiting for the next frame.
 		if (!Cam.Grab()){
@@ -403,23 +447,78 @@ void CCameraThread::Start()
 		// need method of allowing it to drop frames if the GUI plus any image processing is too slow ?  ##########
 
 		const CFrame& frame = Cam.CurrentFrame();
-		if (UpdateSharedFrame(frame, converter)){
+		if (!CacheSharedFrame(frame, converter))
+			break; // error
 
-			// instead of calling InvalidateRect, can we call a callback function so the GUI can define the display update method? 
-			// This way the library does not depend on MFC or any GUI framework. The library should be able to run in a console application or a web server without any GUI dependencies. 
-			//	InvalidateRect(hwnd, nullptr, FALSE);
+		// Call the callback function for GUI specific instructions now we have a new frame (eg, PostMessage to the GUI thread to update display).
+		// Remember this callback is in this thread, the camera thread, not the GUI/consumer thread.
 
-			if(m_frameReadyCallback)
-				m_frameReadyCallback(Counter++, 0);
+		// For each Grab we call the callback, however, its not that simple...
+		// if the callback calls PostMessage(hwnd, WM_APP + 1, 0, 0), the messages could queue up - even while the frame list is full, 
+		// i think we must use InvalidateRect ????
+		// remember the gui is just for display, if we are doing image processing then that could still be done on every frame (if it can keep up)
+		// - so what should decide the frame-dropping, display FPS or image processing FPS?
+		if (m_frameReadyCallback)
+			m_frameReadyCallback(Counter++, 0);
+	}
+}
+
+void CCameraThread::Terminate()
+{
+	// memory_order_relaxed ?
+	m_stop.store(true, std::memory_order_relaxed);
+}
+
+
+
+/*
+* old design, now unused cos i've improved it
+
+// CONSUMER
+// below code block called in GUI thread
+int GetNextFrame()
+{
+	if (m_TailIndex!=m_HeadIndex || m_NumFrames==MAX_FRAMES){
+
+		// -------------------------
+		// read frame at m_TailIndex
+		// -------------------------
+
+		int NextIdx = m_TailIndex + 1;
+		if (NextIdx == MAX_FRAMES)
+			NextIdx = 0;	// ring buffer - wraparound back to start.
+
+		m_TailIndex = NextIdx;
+		m_NumFrames--;
+		return 1;
+	}
+	return 0;
+}
+
+void camera_thread()
+{
+	// initialisation of ATOMIC variables
+	m_HeadIndex = 0;
+	m_TailIndex = 0;
+	m_NumFrames = 0;
+
+	// PRODUCER LOOP
+	while (Grab()){
+
+		if (m_HeadIndex!=m_TailIndex || m_NumFrames==0){
+
+			// --------------------------
+			// write frame at m_HeadIndex
+			// --------------------------
+
+			int NextIdx = m_HeadIndex + 1;
+			if (NextIdx == MAX_FRAMES)
+				NextIdx = 0;	// ring buffer - wraparound back to start.
+
+			m_HeadIndex = NextIdx;
+			m_NumFrames++;
 		}
 	}
 }
 
-
-/*	for(int i=0; i<10; i++){
-TRACE("\n Thread 3 executing \n");
-++n;
-if(m_frameReadyCallback)
-m_frameReadyCallback(i, 0);
-std::this_thread::sleep_for(std::chrono::milliseconds(100));
-}*/
+*/
