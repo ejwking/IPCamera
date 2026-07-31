@@ -81,8 +81,8 @@ void CIPCameraDlg::OnDestroy()
 {
 	CDialogEx::OnDestroy();
 	// TODO: Add your message handler code here
+	m_CamThread.Terminate();
 	FreeBitmapObjects(&m_Pic);
-
 	AfxGetApp()->WriteProfileString(REG_SECTION, _T("ip_camera_url"), m_CameraURL);
 }
 
@@ -111,6 +111,15 @@ void CIPCameraDlg::OnPaint()
 	else{
 		CDialogEx::OnPaint();
 		m_pDC = this->GetDC();
+
+		static int ct=0;
+		TRACE("\n ##### OnPaint %d #####  ", ct++);
+
+		// FIX ...
+		// painting is flicking and it shouldnt be as i'm using a memory dc,
+		// probably the reason will be cos its getting 2 paints here, one above and one in m_CamThread.GetNextFrame();
+
+		m_CamThread.GetNextFrame();
 	}
 }
 
@@ -159,16 +168,6 @@ void CIPCameraDlg::FreeBitmapObjects(MEMORYDC *pMDC)
 	pMDC->InitBitmap = 0;
 }
 
-
-
-
-// good examples here https://en.cppreference.com/cpp/thread/thread/thread
-	/*	for (int i = 0; i < 5; ++i)		{
-			TRACE("\n Thread 3 executing \n");
-			++n;
-			std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		}*/
-
 /*
 How to trigger painting
 You have two good options.
@@ -193,80 +192,60 @@ InvalidateRect(...);
 This is useful if you later want to pass other information to the GUI thread.
 */
 
-void GetNextCallback(const CFrame& rgbFrame)
+void GetNextFrameCallback(const CFrame& rgbFrame, void *pParam)
 {
-	/*
-	if(InitDisplayDC(m_pDC, &m_Pic, rgbFrame.Width(), rgbFrame.Height())){
+	if (pParam){
+		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
 
-		memcpy(m_Pic.pBits, rgbFrame.Data(), rgbFrame.Stride() * rgbFrame.Height());
+		if (pDlg->InitDisplayDC(pDlg->m_pDC, &pDlg->m_Pic, rgbFrame.Width(), rgbFrame.Height())){
 
-		// do additional drawing on m_Pic.DC here if you want to overlay text or graphics on top of the video frame.
+			memcpy(pDlg->m_Pic.pBits, rgbFrame.Data(), rgbFrame.Stride() * rgbFrame.Height());
 
-		m_pDC->BitBlt(0, 0, rgbFrame.Width(), rgbFrame.Height(), &m_Pic.DC, 0, 0, SRCCOPY);
+			// do additional drawing on m_Pic.DC here if you want to overlay text or graphics on top of the video frame.
+
+			pDlg->m_pDC->BitBlt(0, 0, rgbFrame.Width(), rgbFrame.Height(), &pDlg->m_Pic.DC, 0, 0, SRCCOPY);
+		}
 	}
-	*/
 }
 
-void FrameReadyCallback(int frameNumber, int otherParam)
+void FrameReadyCallback(int Count, void *pParam)
 {
-	// remember, this is called from the camera thread, not the GUI thread. So you cannot call any GUI functions here. You can only set flags or post messages to the GUI thread.
-	TRACE("\n FrameReadyCallback %d \n", frameNumber);
-}
+	// This is called from the camera thread, not the GUI thread. 
+	if (pParam){
+		TRACE("\n    FrameReadyCallback %d  ", Count);
+		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
 
+		// think should do post message ?
+
+		// THIS IS CAUSING FLICKING - see comment in OnPaint.
+		pDlg->Invalidate(); 
+		// how would i handle the paint message, would OnPaint be called ? Yes i should think so. try it.
+	}
+}
 
 void CIPCameraDlg::OnBnClickedBtnTest()
 {
+	static int once=0;
+	if (once == 0){
+		
+		once = 1; // need proper one-instance protection in CCameraThread class ?
 
-	std::string CamURL = Utf16ToUtf8(m_CameraURL.GetString());
+		std::string CamURL = Utf16ToUtf8(m_CameraURL.GetString());
 
-	m_CamThread.m_CamURL = CamURL;
-	m_CamThread.m_frameReadyCallback = FrameReadyCallback;
-	m_CamThread.m_GetNextCallback = GetNextCallback;
+		m_CamThread.m_CamURL = CamURL;
+		m_CamThread.m_pCallbackParam = (void*)this;		// check with chatGPT
+		m_CamThread.m_FrameReadyCallback = FrameReadyCallback;
+		m_CamThread.m_GetNextFrameCallback = GetNextFrameCallback;
 
-	std::thread t1(&CCameraThread::Start, &m_CamThread); // t5 runs foo::bar() on object f
-	
+		// this should and could all be hidden in camera thread class function ?
 
-	// wont be using this..
-	t1.join(); // Wait for the thread to finish before continuing
+		// good examples here https://en.cppreference.com/cpp/thread/thread/thread
 
+		std::thread ct(&CCameraThread::Run, &m_CamThread); // ct runs CCameraThread::Run on object m_CamThread
+		ct.detach();
 
-
-
-	/*
-	if (!Cam.Open(CamURL)){
-		TRACE("\n\nOpen failed\n");
-		return;
+	//	t1.join(); // Wait for the thread to finish before continuing
 	}
-
-	int frameNumber = 0;
-	CImageConverter converter;
-	CFrame rgbFrame;	// do not declare in loop as it will allocate memory every time in the constructor. Declare it here and reuse.
-
-	while (Cam.Grab() 
-		&& frameNumber<200
-		)
-	{
-		frameNumber++;
-
-		const CFrame& frame = Cam.CurrentFrame();
-
-		if (converter.Convert(frame, rgbFrame, true)){
-			// rgbFrame now contains RGB24 pixels
-			// TRACE("\nFrame %d   - w %d, h %d, %d, %s  ", frameNumber, rgbFrame.Width(), rgbFrame.Height(), frame.PixelFormat(), frame.PixelFormatName());
-
-			if(InitDisplayDC(m_pDC, &m_Pic, rgbFrame.Width(), rgbFrame.Height())){
-
-				memcpy(m_Pic.pBits, rgbFrame.Data(), rgbFrame.Stride() * rgbFrame.Height());
-
-				// do additional drawing on m_Pic.DC here if you want to overlay text or graphics on top of the video frame.
-
-				m_pDC->BitBlt(0, 0, rgbFrame.Width(), rgbFrame.Height(), &m_Pic.DC, 0, 0, SRCCOPY);
-			}
-
-			Sleep(20); // slow down the loop so we can see the frames. In a real application, you would not sleep here, and you would process frames as fast as they come in.
-		}
-	}
-	*/
 }
 
 void CIPCameraDlg::RgbFrameDrawTest(const CFrame& rgbFrame)
@@ -284,7 +263,7 @@ void CIPCameraDlg::RgbFrameDrawTest(const CFrame& rgbFrame)
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// Separate thread for rtsp camera library.
+// Separate thread for camera library.
 // 
 // Add image processing - ideas...
 //  - plate finder
@@ -292,7 +271,7 @@ void CIPCameraDlg::RgbFrameDrawTest(const CFrame& rgbFrame)
 //  - Darknet for object detection
 //  - maybe Ollama and a LLM ( Gemma4 ).
 // 
-// Separate thread for image processing.
+// another thread for image processing.
 // 
 // Put camera library and image processing in a DLL so that the GUI can be replaced with another GUI framework or web interface.
 // 

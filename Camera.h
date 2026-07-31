@@ -106,65 +106,65 @@ private:
 };
 
 
+enum CAMERATHERAD_RUNCODE{
+	RUNCODE_DEAD = 0,
+	RUNCODE_ALIVE,
+	RUNCODE_KILL,
+};
+
 #define MAX_FRAMES 4
 
 // Terminology - By 'producer' I mean the camera thread, and by 'consumer' I mean GUI thread.
 class CCameraThread
 {
 public:
-	void Start();
-	void Terminate();
+	void Run();
+	void Terminate();		// called from consumer
+	void GetNextFrame();	// called from consumer
 
-	// make these params of Start()
 	std::string m_ErrorLog, m_CamURL;
+	void *m_pCallbackParam;
 
-	void (*m_frameReadyCallback)(int, int) = nullptr;	// called from producer.
-	void (*m_GetNextCallback)(const CFrame& rgbFrame) = nullptr;	// called from consumer.
+	void (*m_FrameReadyCallback)(int, void*) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
+	void (*m_GetNextFrameCallback)(const CFrame& rgbFrame,void*) = nullptr;	// [in consumer] - process next frame buffer, eg, paint it on the window.
 
 private:
-
-	std::atomic<bool> m_stop{false};	// producer/consumer shared.
-	std::atomic<int> m_NumFrames{0};	// producer/consumer shared.
+	std::atomic<int> m_RunCode{RUNCODE_DEAD};	// producer/consumer shared.
+	std::atomic<int> m_NumFrames{0};			// producer/consumer shared.
 
 	CFrame m_SharedFrames[MAX_FRAMES];
 
 	int m_TailIndex = 0;	// consumer only
 	int m_HeadIndex = 0;	// producer only
 
-	void GetNextFrame();
 	bool CacheSharedFrame(const CFrame& frame, CImageConverter& converter);
 };
 
 /*
 CCameraThread
-│
 ▼
 Grab()
-│
 ▼
 Convert to RGB
-│
 ▼
 Store latest frame in circular buffer
-│
 ▼
 GUI 'frame ready' callback 
 
- 
 The frames are not protected by a lock, instead, ownership of the Frame is being transferred between the two threads.
-NumFrames is a convenient single synchronisation variable because it represents the ownership transfer:
+m_NumFrames is a convenient single synchronisation variable because it represents the ownership transfer:
 
 Producer:
 	Frame written
 	↓
 	NumFrames++
 	↓
-	Consumer can read
+	Consumer can read - [ring buffer write index++]
 
 Consumer:
 	Frame read
 	↓
 	NumFrames--
 	↓
-	Producer can reuse
+	Producer can reuse - [ring buffer read index++]
 */

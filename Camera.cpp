@@ -299,7 +299,6 @@ const CFrame& CCamera::CurrentFrame() const
 /* allocate storage for it.
 int size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1);
 m_Impl->m_rgbBuffer = new uint8_t[size];
-
 // and attach it to the RGB frame.
 av_image_fill_arrays(m_Impl->m_rgbFrame->data, m_Impl->m_rgbFrame->linesize, m_Impl->m_rgbBuffer, AV_PIX_FMT_RGB24, codecPar->width, codecPar->height, 1); */
 
@@ -331,7 +330,7 @@ bool CCamera::Grab()
 }
 
 /*####################################################################################################################################
-* 
+
 In std::atomic, Read-Modify-Write (RMW) operations are atomic, indivisible operations that read a value from a memory location, modify it (via an operation), and write the new value back in a single step.
 Unlike ordinary non-atomic increments (like x++) which compile down to separate machine instructions for loading, changing, and saving memory, an RMW operation guarantees that no other thread can interleave 
 or modify the variable between the read and the write steps. Furthermore, RMW operations are unique because they are guaranteed to always operate on the absolute latest value in the modification order of 
@@ -370,23 +369,22 @@ When to Use std::mutex
 void CCameraThread::GetNextFrame()
 {
 	// This function to be called in GUI message loop in response to PostMessage or 
-	// InvalidateRect (which would have been instigated by m_frameReadyCallback).
+	// Invalidate/InvalidateRect (which would have been instigated by m_FrameReadyCallback).
 
 	if (m_NumFrames.load(std::memory_order_acquire) > 0){
-
 		// -------------------------
 		// read frame at m_TailIndex
 		// -------------------------
 
 		// CALLBACK for GUI specific code.
-		if (m_GetNextCallback)
-			m_GetNextCallback(m_SharedFrames[m_TailIndex]);
+		if (m_GetNextFrameCallback)
+			m_GetNextFrameCallback(m_SharedFrames[m_TailIndex], m_pCallbackParam);
 
 		m_TailIndex++;
 		if (m_TailIndex == MAX_FRAMES)
 			m_TailIndex = 0;	// ring buffer - wraparound back to start.
 
-		// Release the Frame back to producer by decrementing m_NumFrames.
+		// Release the Frame back to producer by subtracting 1 from m_NumFrames.
 		m_NumFrames.fetch_sub(1, std::memory_order_release);
 	}
 }
@@ -394,7 +392,6 @@ void CCameraThread::GetNextFrame()
 bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& converter)
 {
 	if (m_NumFrames.load(std::memory_order_acquire) < MAX_FRAMES){
-		
 		// --------------------------
 		// write frame at m_HeadIndex
 		// --------------------------
@@ -408,7 +405,7 @@ bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& conve
 		if (m_HeadIndex == MAX_FRAMES)
 			m_HeadIndex = 0;	// ring buffer - wraparound back to start.
 
-		// Publish the completed frame by incrementing m_NumFrames.
+		// Publish the completed frame by adding 1 to m_NumFrames.
 		m_NumFrames.fetch_add(1, std::memory_order_release);
 	}
 	else {
@@ -418,9 +415,32 @@ bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& conve
 	return true; 
 }
 
-void CCameraThread::Start()
+//#define SIMPLE_TEST
+#ifdef SIMPLE_TEST
+void CCameraThread::Run()
 {
-	// Need proper error reporting for when thread exits unexpectedly.
+	m_HeadIndex = 0;
+	m_TailIndex = 0;
+	m_NumFrames.store(0, std::memory_order_relaxed);
+	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
+
+	int Counter = 0;
+	while (m_RunCode.load(std::memory_order_relaxed)==RUNCODE_ALIVE && Counter<30){
+
+		if (m_FrameReadyCallback)
+			m_FrameReadyCallback(Counter, m_pCallbackParam);
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		TRACE("\n  [camera thread loop : %d]  ", Counter);
+		Counter++;
+	}
+	m_RunCode.store(RUNCODE_DEAD, std::memory_order_release);
+}
+
+#else
+void CCameraThread::Run()
+{
+	// To do - Need proper error reporting for when thread exits unexpectedly.
 	CCamera Cam;
 	if (!Cam.Open(m_CamURL)){
 		m_ErrorLog += "\n Open failed \n";
@@ -429,11 +449,13 @@ void CCameraThread::Start()
 
 	m_HeadIndex = 0;	// Head = next slot the producer will write.
 	m_TailIndex = 0;	// Tail = next slot the consumer will read.
-	m_NumFrames.store(0, std::memory_order_relaxed);	// NumFrames = number of completed frames currently in the buffer.
+	// m_NumFrames = number of completed frames currently in the buffer.
+	m_NumFrames.store(0, std::memory_order_relaxed);
+	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
 
 	CImageConverter converter;
 	int Counter = 0;
-	while (!m_stop.load(std::memory_order_relaxed)){
+	while (m_RunCode.load(std::memory_order_relaxed) == RUNCODE_ALIVE){
 
 		// Grab will naturally block waiting for the next frame.
 		if (!Cam.Grab()){
@@ -443,8 +465,6 @@ void CCameraThread::Start()
 			// alternatively, sleep for a while - std::this_thread::sleep_for(std::chrono::seconds(1));
 			// and attempt reconnect.
 		}
-
-		// need method of allowing it to drop frames if the GUI plus any image processing is too slow ?  ##########
 
 		const CFrame& frame = Cam.CurrentFrame();
 		if (!CacheSharedFrame(frame, converter))
@@ -458,67 +478,26 @@ void CCameraThread::Start()
 		// i think we must use InvalidateRect ????
 		// remember the gui is just for display, if we are doing image processing then that could still be done on every frame (if it can keep up)
 		// - so what should decide the frame-dropping, display FPS or image processing FPS?
-		if (m_frameReadyCallback)
-			m_frameReadyCallback(Counter++, 0);
+		if (m_FrameReadyCallback)
+			m_FrameReadyCallback(Counter, m_pCallbackParam);
+		Counter++;
 	}
+	m_RunCode.store(RUNCODE_DEAD, std::memory_order_release);
 }
+#endif
 
 void CCameraThread::Terminate()
 {
-	// memory_order_relaxed ?
-	m_stop.store(true, std::memory_order_relaxed);
-}
-
-
-
-/*
-* old design, now unused cos i've improved it
-
-// CONSUMER
-// below code block called in GUI thread
-int GetNextFrame()
-{
-	if (m_TailIndex!=m_HeadIndex || m_NumFrames==MAX_FRAMES){
-
-		// -------------------------
-		// read frame at m_TailIndex
-		// -------------------------
-
-		int NextIdx = m_TailIndex + 1;
-		if (NextIdx == MAX_FRAMES)
-			NextIdx = 0;	// ring buffer - wraparound back to start.
-
-		m_TailIndex = NextIdx;
-		m_NumFrames--;
-		return 1;
+	// function will block until camera thread has stopped.
+	if (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD){
+		// kill thread.
+		m_RunCode.store(RUNCODE_KILL, std::memory_order_relaxed);
+		// wait for thread to terminate.
+		while (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD)
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
 	}
-	return 0;
+
+	// check this with chatGPT - dont make assumptions.
+	// 
 }
 
-void camera_thread()
-{
-	// initialisation of ATOMIC variables
-	m_HeadIndex = 0;
-	m_TailIndex = 0;
-	m_NumFrames = 0;
-
-	// PRODUCER LOOP
-	while (Grab()){
-
-		if (m_HeadIndex!=m_TailIndex || m_NumFrames==0){
-
-			// --------------------------
-			// write frame at m_HeadIndex
-			// --------------------------
-
-			int NextIdx = m_HeadIndex + 1;
-			if (NextIdx == MAX_FRAMES)
-				NextIdx = 0;	// ring buffer - wraparound back to start.
-
-			m_HeadIndex = NextIdx;
-			m_NumFrames++;
-		}
-	}
-}
-
-*/
