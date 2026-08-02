@@ -407,6 +407,10 @@ bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& conve
 
 		// Publish the completed frame by adding 1 to m_NumFrames.
 		m_NumFrames.fetch_add(1, std::memory_order_release);
+
+		// Callback function for GUI specific instructions now we have a new frame (eg, PostMessage to the GUI thread to call GetNextFrame and update display).
+		if (m_FrameReadyCallback)
+			m_FrameReadyCallback(0, m_pCallbackParam);
 	}
 	else {
 		// Frame dropped - The head has wrapped around the circular buffer and caught the 
@@ -454,7 +458,6 @@ void CCameraThread::Run()
 	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
 
 	CImageConverter converter;
-	int Counter = 0;
 	while (m_RunCode.load(std::memory_order_relaxed) == RUNCODE_ALIVE){
 
 		// Grab will naturally block waiting for the next frame.
@@ -469,18 +472,6 @@ void CCameraThread::Run()
 		const CFrame& frame = Cam.CurrentFrame();
 		if (!CacheSharedFrame(frame, converter))
 			break; // error
-
-		// Call the callback function for GUI specific instructions now we have a new frame (eg, PostMessage to the GUI thread to update display).
-		// Remember this callback is in this thread, the camera thread, not the GUI/consumer thread.
-
-		// For each Grab we call the callback, however, its not that simple...
-		// if the callback calls PostMessage(hwnd, WM_APP + 1, 0, 0), the messages could queue up - even while the frame list is full, 
-		// i think we must use InvalidateRect ????
-		// remember the gui is just for display, if we are doing image processing then that could still be done on every frame (if it can keep up)
-		// - so what should decide the frame-dropping, display FPS or image processing FPS?
-		if (m_FrameReadyCallback)
-			m_FrameReadyCallback(Counter, m_pCallbackParam);
-		Counter++;
 	}
 	m_RunCode.store(RUNCODE_DEAD, std::memory_order_release);
 }
@@ -496,8 +487,7 @@ void CCameraThread::Terminate()
 		while (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD)
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));
 	}
-
-	// check this with chatGPT - dont make assumptions.
+	// check this with chatGPT 
 	// 
 }
 

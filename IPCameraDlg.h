@@ -13,7 +13,7 @@ struct MEMORYDC
 	BITMAPINFO bmi={0};
 	uint8_t	  *pBits=nullptr;
 	CDC        DC;	// or HDC? ..CDC better cos I can use GDI functions using class '->' syntax.
-	int        Wd=0, Ht=0;
+//	int        Wd=0, Ht=0;
 	int        InitBitmap=0, InitDC=0;
 };
 
@@ -54,6 +54,7 @@ protected:
 	DECLARE_MESSAGE_MAP()
 
 public:
-	afx_msg void OnBnClickedBtnTest();
 	afx_msg void OnDestroy();
+	afx_msg LRESULT OnFrameReady(WPARAM wParam, LPARAM lParam);
+	afx_msg void OnBnClickedBtnConnect();
 };

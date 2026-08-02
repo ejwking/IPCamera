@@ -114,7 +114,9 @@ enum CAMERATHERAD_RUNCODE{
 
 #define MAX_FRAMES 4
 
-// Terminology - By 'producer' I mean the camera thread, and by 'consumer' I mean GUI thread.
+// Terminology: 
+// 'producer' - camera thread
+// 'consumer' - GUI thread.
 class CCameraThread
 {
 public:
@@ -126,7 +128,7 @@ public:
 	void *m_pCallbackParam;
 
 	void (*m_FrameReadyCallback)(int, void*) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
-	void (*m_GetNextFrameCallback)(const CFrame& rgbFrame,void*) = nullptr;	// [in consumer] - process next frame buffer, eg, paint it on the window.
+	void (*m_GetNextFrameCallback)(const CFrame& rgbFrame, void*) = nullptr;	// [in consumer] - process next frame buffer, eg, paint it on the window.
 
 private:
 	std::atomic<int> m_RunCode{RUNCODE_DEAD};	// producer/consumer shared.
