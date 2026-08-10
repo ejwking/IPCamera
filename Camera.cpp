@@ -1,20 +1,19 @@
 
 #include "pch.h"
 #include "Camera.h"
+#include <thread>
 
-// FFmpeg headers:
-// ..written in C, so tell the C++ compiler to treat the FFmpeg headers as C code using the extern "C" linkage specification. (It prevents name mangling and allows the C++ code to link correctly with the C functions).
+// FFmpeg examples https://github.com/FFmpeg/FFmpeg/blob/master/doc/examples/demux_decode.c
 extern "C"
 {
+	// FFmpeg headers:	..written in C, so tell the C++ compiler to treat the headers as C code using the extern "C" linkage 
+	// specification. It prevents name mangling and allows the C++ code to link correctly with the C functions.
 	#include <libavformat/avformat.h>
 	#include <libavcodec/avcodec.h>
 	#include <libavutil/avutil.h>
 	#include <libavutil/imgutils.h>
 	#include <libswscale/swscale.h>
 }
-
-// FFmpeg examples https://github.com/FFmpeg/FFmpeg/blob/master/doc/examples/demux_decode.c
-
 
 //####################################################################################################################################
 
@@ -370,51 +369,30 @@ void CCameraThread::GetNextFrame()
 {
 	// This function to be called in GUI message loop in response to PostMessage or 
 	// Invalidate/InvalidateRect (which would have been instigated by m_FrameReadyCallback).
-
-	if (m_NumFrames.load(std::memory_order_acquire) > 0){
-		// -------------------------
-		// read frame at m_TailIndex
-		// -------------------------
-
-		// CALLBACK for GUI specific code.
+	if (m_Ring.AcquireRead()){
+		// Callback for GUI specific code.
 		if (m_GetNextFrameCallback)
-			m_GetNextFrameCallback(m_SharedFrames[m_TailIndex], m_pCallbackParam);
-
-		m_TailIndex++;
-		if (m_TailIndex == MAX_FRAMES)
-			m_TailIndex = 0;	// ring buffer - wraparound back to start.
-
-		// Release the Frame back to producer by subtracting 1 from m_NumFrames.
-		m_NumFrames.fetch_sub(1, std::memory_order_release);
+			m_GetNextFrameCallback(m_SharedFrames[m_Ring.GetReadIndex()], m_pCallbackParam);
+		m_Ring.ReleaseRead();
 	}
 }
 
 bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& converter)
 {
-	if (m_NumFrames.load(std::memory_order_acquire) < MAX_FRAMES){
-		// --------------------------
-		// write frame at m_HeadIndex
-		// --------------------------
-
-		if (!converter.Convert(frame, m_SharedFrames[m_HeadIndex], true)){
+	if (m_Ring.AcquireWrite()){
+		if (!converter.Convert(frame, m_SharedFrames[m_Ring.GetWriteIndex()], true)){
 			m_ErrorLog += "\n convert to rgb failed \n";
 			return false;
 		}
-
-		m_HeadIndex++;
-		if (m_HeadIndex == MAX_FRAMES)
-			m_HeadIndex = 0;	// ring buffer - wraparound back to start.
-
-		// Publish the completed frame by adding 1 to m_NumFrames.
-		m_NumFrames.fetch_add(1, std::memory_order_release);
-
-		// Callback function for GUI specific instructions now we have a new frame (eg, PostMessage to the GUI thread to call GetNextFrame and update display).
+		m_Ring.ReleaseWrite();
+		// Callback function for GUI specific instructions now we have a new frame (eg, PostMessage 
+		// to the GUI thread to call GetNextFrame and update display).
 		if (m_FrameReadyCallback)
 			m_FrameReadyCallback(0, m_pCallbackParam);
 	}
 	else {
-		// Frame dropped - The head has wrapped around the circular buffer and caught the 
-		// tail, in other words the list is full, the consumer thread isnt keeping up.
+		// Frame dropped - (inside SPSCRingBufManager..) the head has wrapped around the circular buffer and 
+		// caught the tail, in other words the list is full, the consumer thread isnt keeping up.
 	}
 	return true; 
 }
@@ -423,11 +401,7 @@ bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& conve
 #ifdef SIMPLE_TEST
 void CCameraThread::Run()
 {
-	m_HeadIndex = 0;
-	m_TailIndex = 0;
-	m_NumFrames.store(0, std::memory_order_relaxed);
 	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
-
 	int Counter = 0;
 	while (m_RunCode.load(std::memory_order_relaxed)==RUNCODE_ALIVE && Counter<30){
 
@@ -450,13 +424,8 @@ void CCameraThread::Run()
 		m_ErrorLog += "\n Open failed \n";
 		return;
 	}
-
-	m_HeadIndex = 0;	// Head = next slot the producer will write.
-	m_TailIndex = 0;	// Tail = next slot the consumer will read.
-	// m_NumFrames = number of completed frames currently in the buffer.
-	m_NumFrames.store(0, std::memory_order_relaxed);
+	m_Ring.Initialise();
 	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
-
 	CImageConverter converter;
 	while (m_RunCode.load(std::memory_order_relaxed) == RUNCODE_ALIVE){
 
@@ -480,6 +449,7 @@ void CCameraThread::Run()
 void CCameraThread::Terminate()
 {
 	// function will block until camera thread has stopped.
+	// todo - check this function with chatGPT.
 	if (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD){
 		// kill thread.
 		m_RunCode.store(RUNCODE_KILL, std::memory_order_relaxed);
@@ -487,7 +457,5 @@ void CCameraThread::Terminate()
 		while (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD)
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));
 	}
-	// check this with chatGPT 
-	// 
 }
 
