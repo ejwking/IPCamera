@@ -36,7 +36,7 @@ public:
 
 	int Width() const;
 	int Height() const;
-	int Stride() const;
+	int LineSize() const;
 	const uint8_t* ScanLine(int y) const;
 	const uint8_t* Data() const;
 	bool IsValid() const;
@@ -92,7 +92,7 @@ public:
 
 private:
 	// The PImpl Idiom (Pointer to IMPLementation) is a technique used for separating implementation from the interface. It minimizes header exposure.
-	// Maybe pointless for my little project, but I wanted to try it out. It is a good technique for large projects where you want to hide implementation details and reduce compilation dependencies.
+	// It is a good technique for projects where you want to hide implementation details and reduce compilation dependencies.
 	class Impl; // forward declaration
 	std::unique_ptr<Impl> m_Impl;   // hide impl details
 	// The unique_ptr will automatically manage the memory of the implementation object, ensuring proper cleanup when the CImageConverter object is destroyed.
@@ -100,17 +100,16 @@ private:
 };
 
 
-// SPSCRingBufManager implements a SPSC (Single-Producer Single-Consumer) ring buffer. Because it strictly involves exactly one writer 
-// and one reader, it eliminates the need for expensive mutex locks, making it wait-free and highly optimized for real-time systems.
-// The buffers are not protected by a lock, instead, ownership of the buffer is being transferred between the two threads.
-// m_Num is a convenient single synchronisation variable because it represents the ownership transfer:
+// SPSCRingBuffer implements a SPSC (Single-Producer Single-Consumer) ring buffer. Because it strictly involves exactly one writer and one reader, it eliminates 
+// the need for expensive mutex locks, making it wait-free and optimised for real-time systems. The buffers are not protected by a lock, instead, ownership of
+// the buffer is being transferred between the two threads. m_Num is a convenient single synchronisation variable because it represents the ownership transfer:
 // 
 // Producer:  Frame written  ->  Advance head, NumFrames++  ->  Consumer can read
 // Consumer:  Frame read     ->  Advance tail, NumFrames--  ->  Producer can reuse
-
-template <int MAX_ENTRIES> class SPSCRingBufManager
+template <typename Ty, int MAX_ENTRIES> class SPSCRingBuffer
 {
 private:
+	Ty  m_Buf[MAX_ENTRIES];
 	int m_TailIndex = 0;		// consumer only
 	int m_HeadIndex = 0;		// producer only
 	std::atomic<int> m_Num{0};	// producer/consumer shared.
@@ -121,12 +120,12 @@ public:
 		m_TailIndex = 0;	// Tail = next index the consumer will read.
 		m_Num.store(0, std::memory_order_relaxed);	// m_Num = number of completed entries currently in the buffer.
 	}
-
-	bool AcquireRead()
-	{	// if true - consumer can read entry at m_TailIndex ( GetReadIndex() ).
-		return (m_Num.load(std::memory_order_acquire) > 0);
+	Ty *AcquireRead()
+	{
+		if (m_Num.load(std::memory_order_acquire) > 0)
+			return &m_Buf[m_TailIndex];	// consumer can read entry at m_TailIndex.
+		return nullptr;
 	}
-	int GetReadIndex() const { return m_TailIndex; }
 	void ReleaseRead()
 	{
 		m_TailIndex++;
@@ -135,12 +134,12 @@ public:
 		// Release the entry back to producer by subtracting 1 from m_Num.
 		m_Num.fetch_sub(1, std::memory_order_release);
 	}
-
-	bool AcquireWrite()
-	{	// if true - producer can write entry at m_HeadIndex ( GetWriteIndex() ).
-		return (m_Num.load(std::memory_order_acquire) < MAX_ENTRIES);
+	Ty *AcquireWrite()
+	{
+		if (m_Num.load(std::memory_order_acquire) < MAX_ENTRIES)
+			return &m_Buf[m_HeadIndex];	// producer can write entry at m_HeadIndex.
+		return nullptr;
 	}
-	int GetWriteIndex() const { return m_HeadIndex; }
 	void ReleaseWrite()
 	{
 		m_HeadIndex++;
@@ -157,70 +156,90 @@ enum CAMERATHERAD_RUNCODE{
 	RUNCODE_KILL,
 };
 
-#define MAX_FRAMES 4
+#define MAX_FRAMES 3
 
 class CCameraThread
 {
 public:
-	void Run();
-	void Terminate();		// called from consumer
-	void GetNextFrame();	// called from consumer
+	SPSCRingBuffer<CFrame, MAX_FRAMES> m_RingBuf;	// public for now. to do - make private and add a callback for CImageProcessingThread to read the next frame.
 
-	std::string m_ErrorLog, m_CamURL;
+	void Start(const std::string& url);
+	void Terminate();
+
+#ifdef CAM_DIRECT_TO_GUI
 	void *m_pCallbackParam;
-
-	
-	
-	// not gonna need this one here, it will be 
-	// in the image processing thread class.
-	// i suggest the img proc class just keeps polling/looping for frames, 
-	// and when it gets one, it processes it and then calls the callback to the GUI thread to update the display.
-	// 
-	// if it doesnt get a frame it should just sleep for a few milliseconds 
-
-	void (*m_FrameReadyCallback)(int, void*) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
-	
-
-
-
-	void (*m_GetNextFrameCallback)(const CFrame& rgbFrame, void*) = nullptr;	// [in consumer] - process next frame buffer, eg, paint it on the window.
+	// Just for testing - The camera thread will write directly to the GUI window, bypassing the image processing thread.
+	void GetNextFrame();	// called from consumer
+	void (*m_FrameReadyCallback)(int Code, void *pParam) = nullptr;		// [in producer] - optional.
+	void (*m_GetNextFrameCallback)(const CFrame *pRgbFrame, void *pParam) = nullptr;	// [in consumer] - optional.
+#endif
 
 private:
-	SPSCRingBufManager<MAX_FRAMES> m_Ring;
-	CFrame m_SharedFrames[MAX_FRAMES];
 	std::atomic<int> m_RunCode{RUNCODE_DEAD};	// producer/consumer shared.
-
-	bool CacheSharedFrame(const CFrame& frame, CImageConverter& converter);
+	std::string m_ErrorLog, m_CamURL;
+	void Run();
+	bool WriteNextFrame(const CFrame& frame, CImageConverter& converter);
 };
 
 
-/*
+class CImageMem
+{
+public:
+	uint8_t	*pBits=nullptr;
+	int      Wd=0, Ht=0, Planes=0, Span=0, Padding=0, Size=0;
+	CImageMem(){}
+	~CImageMem()
+	{
+		if(pBits)
+			delete[] pBits;
+		Size = 0;
+	}
+	void Allocate()
+	{
+		if (Size>0 && !pBits)
+			pBits = new uint8_t[Size];
+	}
+};
+
 class CImageProcessingThread
 {
 public:
-	void Run();
-	void Terminate();		// called from consumer
-	void GetNextFrame();	// called from consumer
-
-	std::string m_ErrorLog;
-	void *m_pCallbackParam;
-
-	void (*m_FrameReadyCallback)(int, void*) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
-	void (*m_GetNextFrameCallback)(const CFrame& rgbFrame, void*) = nullptr;	// [in consumer] - process next frame buffer, eg, paint it on the window.
+	void Start(CCameraThread *pCamThread, void (*FrameReadyCallback)(int Code, void *pParam), void (*GetNextFrameCallback)(const CImageMem *pImage, void *pParam), void *pCallbackParam);
+	void Terminate();
+	void GetNextFrame();	// called from consumer thread and will invoke callback GetNextFrameCallback() to process the next frame buffer.
 
 private:
-	SPSCRingBufManager<MAX_FRAMES> m_Ring;
+	SPSCRingBuffer<CImageMem, MAX_FRAMES> m_RingBuf;
 
-	
-	// ??? or just the image bits ???
-	MEMORYDC m_SharedFrames[MAX_FRAMES];
-
-	
 	std::atomic<int> m_RunCode{RUNCODE_DEAD};	// producer/consumer shared.
+	CCameraThread   *m_pCamThread;
+	std::string      m_ErrorLog;
+	void            *m_pCallbackParam;
 
-	bool CacheSharedFrame(const CFrame& frame, CImageConverter& converter);
+	void Run();
+	bool CopyFrame(CFrame *pSource, CImageMem *pDest);
+	bool DoImageProcessing(CImageMem *pImg);
+	bool WriteNextFrame(CFrame *pRgbFrame);
+
+	void (*m_FrameReadyCallback)(int Code, void *pParam) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
+	void (*m_GetNextFrameCallback)(const CImageMem *pImage, void *pParam) = nullptr;	// [in consumer] - process next frame buffer, eg, paint it on the window.
+	//void (*m_InitialiseDIBCallback)(CImageMem*, int, int, void*) = nullptr;	// [in consumer] - optional.
 };
-*/
+
+
+// TO DO - 
+// 
+// check with chatGPT my thread management is correct and using best practice.
+// Add a utilities .h/.cpp and move the UTF16 to UTF8 conversion functions there and other utility functions like TRACE, message box, etc.
+// 
+// inconsistant use of 'const'
+// using pointers in places where references would be 'better' - in adverted commas.
+//
+// Option to have the display on or off, if off then image processing should run in background.
+// Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.
+//
+// put plate finding module in (but not in github).
+
 
 
 

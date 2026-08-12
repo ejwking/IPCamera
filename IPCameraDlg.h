@@ -26,12 +26,13 @@ public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
 	CCameraThread m_CamThread;
+	CImageProcessingThread m_ImgProcThread;
 
 	CString   m_CameraURL;
 	MEMORYDC  m_Pic;
 	CDC      *m_pDC=nullptr;
 
-	void FreeBitmapObjects(MEMORYDC * pMDC);
+	void FreeBitmapObjects(MEMORYDC *pMDC);
 	int  InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht);
 	void RgbFrameDrawTest(const CFrame& rgbFrame);
 

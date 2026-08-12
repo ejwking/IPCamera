@@ -82,6 +82,7 @@ void CIPCameraDlg::OnDestroy()
 	CDialogEx::OnDestroy();
 	// TODO: Add your message handler code here
 	m_CamThread.Terminate();
+	m_ImgProcThread.Terminate();
 	FreeBitmapObjects(&m_Pic);
 	AfxGetApp()->WriteProfileString(REG_SECTION, _T("ip_camera_url"), m_CameraURL);
 }
@@ -125,13 +126,13 @@ HCURSOR CIPCameraDlg::OnQueryDragIcon()
 int CIPCameraDlg::InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht)
 {
 	if (pMemDC->InitDC==0 || pMemDC->InitBitmap==0){
-
+		FreeBitmapObjects(pMemDC);
 		memset(&pMemDC->bmi.bmiHeader, 0, sizeof(pMemDC->bmi.bmiHeader));
 		pMemDC->bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
 		pMemDC->bmi.bmiHeader.biWidth       = Wd;
-		pMemDC->bmi.bmiHeader.biHeight      = -Ht;		// HARD CODED - negative height to create a top-down DIB
-		pMemDC->bmi.bmiHeader.biPlanes      = 1;
-		pMemDC->bmi.bmiHeader.biBitCount    = 24;		// HARD CODING,  FIX THIS
+		pMemDC->bmi.bmiHeader.biHeight      = -Ht;	// HARD CODED (HACK??) - negative height to create a top-down DIB
+		pMemDC->bmi.bmiHeader.biPlanes      = 1;	// ???
+		pMemDC->bmi.bmiHeader.biBitCount    = 24;	// HARD CODED, FIX THIS
 		pMemDC->bmi.bmiHeader.biCompression = BI_RGB;
 		void *pBitmapBits;
 		pMemDC->hBitmap = CreateDIBSection(0, &pMemDC->bmi, DIB_RGB_COLORS, &pBitmapBits, 0, 0);
@@ -145,8 +146,13 @@ int CIPCameraDlg::InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht)
 			}
 		}
 	}
-	if (pMemDC->InitDC && pMemDC->InitBitmap)
-		return 1;
+
+	if (pMemDC->InitDC && pMemDC->InitBitmap){
+		if (pMemDC->bmi.bmiHeader.biWidth==Wd && abs(pMemDC->bmi.bmiHeader.biHeight)==Ht)
+			return 1;
+		// bitmap size has changed, I dont want to cope with this because it shouldn't happen - and if i did we would not want to keep deleting/creating bitmaps.
+		::AfxMessageBox(_T("error - Bitmap size has changed."));
+	}
 	return 0;
 }
 
@@ -166,29 +172,18 @@ LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 	// result in a call to GetNextFrameCallback() which will update the display with the new frame.
 	if (m_pDC == nullptr)
 		m_pDC = this->GetDC();
-	m_CamThread.GetNextFrame();
+	m_ImgProcThread.GetNextFrame();
 	return 0;
 }
 
-void GetNextFrameCallback(const CFrame& rgbFrame, void *pParam)
+void GetNextFrameCallback(const CImageMem *pImage, void *pParam)
 {
 	if (pParam){
 		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
-
 		if (pDlg->m_pDC){
-			if (pDlg->InitDisplayDC(pDlg->m_pDC, &pDlg->m_Pic, rgbFrame.Width(), rgbFrame.Height())){
-
-				memcpy(pDlg->m_Pic.pBits, rgbFrame.Data(), rgbFrame.Stride() * rgbFrame.Height());
-
-				// Here we might do image processing on the rgbFrame, or we might do it in the camera thread before calling this callback.
-				// If we do it here, we might want to do it in a separate thread so that the GUI thread isn't blocked for too long.
-				// 
-				// best option - third thread for image processing - maybe a thread pool for multiple frames in parallel.
-				// 
-				// do additional drawing on m_Pic.DC here if we want to overlay text or graphics on the video frame.
-
-				pDlg->m_pDC->BitBlt(0, 0, rgbFrame.Width(), rgbFrame.Height(), &pDlg->m_Pic.DC, 0, 0, SRCCOPY);
-
+			if (pDlg->InitDisplayDC(pDlg->m_pDC, &pDlg->m_Pic, pImage->Wd, pImage->Ht)){
+				memcpy(pDlg->m_Pic.pBits, pImage->pBits, pImage->Size);
+				pDlg->m_pDC->BitBlt(0, 0, pImage->Wd, pImage->Ht, &pDlg->m_Pic.DC, 0, 0, SRCCOPY);
 				// alternatively, call InvalidateRect(...) and do the painting in OnPaint().
 			}
 		}
@@ -197,11 +192,10 @@ void GetNextFrameCallback(const CFrame& rgbFrame, void *pParam)
 
 void FrameReadyCallback(int Code, void *pParam)
 {
-	// This is called from the camera thread, not the GUI thread. 
+	// This is called from the image processing thread, not the GUI thread. 
 	if (pParam){
-		TRACE("\n    FrameReadyCallback %d  ", Code);
+		// TRACE("\n  FrameReadyCallback %d  ", Code);
 		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
-
 		// Post message to the GUI thread.
 		pDlg->PostMessage(WM_APP_FRAME_READY, 0, 0);
 	}
@@ -212,20 +206,11 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 	static int once=0;
 	if (once == 0){
 		
-		once = 1; // need proper one-instance protection in CCameraThread class ?
+		once = 1;
+		m_CamThread.Start(Utf16ToUtf8(m_CameraURL.GetString()));
+		m_ImgProcThread.Start(&m_CamThread, FrameReadyCallback, GetNextFrameCallback, (void*)this);
 
-		m_CamThread.m_CamURL = Utf16ToUtf8(m_CameraURL.GetString());
-		m_CamThread.m_pCallbackParam = (void*)this;		// check with chatGPT
-		m_CamThread.m_FrameReadyCallback = FrameReadyCallback;
-		m_CamThread.m_GetNextFrameCallback = GetNextFrameCallback;
-
-		// this should and could all be hidden in camera thread class function ?
-
-		// std::thread : https://en.cppreference.com/cpp/thread/thread/thread
-
-		std::thread ct(&CCameraThread::Run, &m_CamThread); // ct runs CCameraThread::Run on object m_CamThread
-		ct.detach();
-		// ct.join(); // Wait for the thread to finish before continuing.
+		// check with chatGPT that 'this' pointers are still the modern way to do things.
 	}
 }
 

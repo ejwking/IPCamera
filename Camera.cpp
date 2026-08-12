@@ -50,14 +50,14 @@ int CFrame::Height() const
 	return m_Impl->m_frame->height;
 }
 
-int CFrame::Stride() const
+int CFrame::LineSize() const
 {
 	return m_Impl->m_frame->linesize[0];
 }
 
 const uint8_t* CFrame::ScanLine(int y) const
 {
-	return m_Impl->m_frame->data[0] + y * m_Impl->m_frame->linesize[0];
+	return m_Impl->m_frame->data[0] + (y * m_Impl->m_frame->linesize[0]);
 }
 
 const uint8_t* CFrame::Data() const
@@ -365,97 +365,266 @@ When to Use std::mutex
 
 //####################################################################################################################################*/
 
+#ifdef CAM_DIRECT_TO_GUI
 void CCameraThread::GetNextFrame()
 {
-	// This function to be called in GUI message loop in response to PostMessage or 
-	// Invalidate/InvalidateRect (which would have been instigated by m_FrameReadyCallback).
-	if (m_Ring.AcquireRead()){
-		// Callback for GUI specific code.
+	// This function is called in the consumer thread. Alternatively, the consumer can just call CameraThreadObject::m_RingBuf.AcquireRead()  
+	// directly and then process the frame, in which case this function will not be used.
+	CFrame *pBuf = m_RingBuf.AcquireRead();
+	if (pBuf){
+		// Callback for consumer specific code.
 		if (m_GetNextFrameCallback)
-			m_GetNextFrameCallback(m_SharedFrames[m_Ring.GetReadIndex()], m_pCallbackParam);
-		m_Ring.ReleaseRead();
+			m_GetNextFrameCallback(pBuf, m_pCallbackParam);
+		m_RingBuf.ReleaseRead();
+	}
+	else {
+		// No frame available. The producer is slower than the consumer at the moment.
 	}
 }
+#endif
 
-bool CCameraThread::CacheSharedFrame(const CFrame& frame, CImageConverter& converter)
+bool CCameraThread::WriteNextFrame(const CFrame& frame, CImageConverter& converter)
 {
-	if (m_Ring.AcquireWrite()){
-		if (!converter.Convert(frame, m_SharedFrames[m_Ring.GetWriteIndex()], true)){
+	// This function is called in the producer thread after a new frame has been grabbed from the camera. 
+	// It converts the frame to RGB and writes it to the ring buffer.
+	CFrame *pBuf = m_RingBuf.AcquireWrite();
+	if (pBuf){
+		if (!converter.Convert(frame, *pBuf, true)){
 			m_ErrorLog += "\n convert to rgb failed \n";
 			return false;
 		}
-		m_Ring.ReleaseWrite();
-		// Callback function for GUI specific instructions now we have a new frame (eg, PostMessage 
-		// to the GUI thread to call GetNextFrame and update display).
+		m_RingBuf.ReleaseWrite();
+
+#ifdef CAM_DIRECT_TO_GUI
+		// Optional callback for consumer specific instructions now we have a new frame (eg, PostMessage 
+		// to the GUI thread to call ReadNextFrame and update display).
 		if (m_FrameReadyCallback)
 			m_FrameReadyCallback(0, m_pCallbackParam);
+#endif
 	}
 	else {
-		// Frame dropped - (inside SPSCRingBufManager..) the head has wrapped around the circular buffer and 
-		// caught the tail, in other words the list is full, the consumer thread isnt keeping up.
+		// Frame dropped, ring buffer is full. The consumer is slower than the producer at the moment.
 	}
 	return true; 
 }
 
-//#define SIMPLE_TEST
-#ifdef SIMPLE_TEST
 void CCameraThread::Run()
 {
-	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
-	int Counter = 0;
-	while (m_RunCode.load(std::memory_order_relaxed)==RUNCODE_ALIVE && Counter<30){
+	// To do - proper error reporting for when thread exits unexpectedly.
 
-		if (m_FrameReadyCallback)
-			m_FrameReadyCallback(Counter, m_pCallbackParam);
-
-		std::this_thread::sleep_for(std::chrono::milliseconds(200));
-		TRACE("\n  [camera thread loop : %d]  ", Counter);
-		Counter++;
-	}
-	m_RunCode.store(RUNCODE_DEAD, std::memory_order_release);
-}
-
-#else
-void CCameraThread::Run()
-{
-	// To do - Need proper error reporting for when thread exits unexpectedly.
 	CCamera Cam;
 	if (!Cam.Open(m_CamURL)){
 		m_ErrorLog += "\n Open failed \n";
-		return;
 	}
-	m_Ring.Initialise();
-	m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
-	CImageConverter converter;
-	while (m_RunCode.load(std::memory_order_relaxed) == RUNCODE_ALIVE){
+	else {
+		// Open succeeded, now we can grab frames.
+		m_RingBuf.Initialise();
+		bool Ok = true;
+		CImageConverter converter;
+		while (m_RunCode.load(std::memory_order_relaxed)==RUNCODE_ALIVE && Ok){
 
-		// Grab will naturally block waiting for the next frame.
-		if (!Cam.Grab()){
-			// Lost stream?
-			m_ErrorLog += "\n Grab failed \n";
-			break;
-			// alternatively, sleep for a while - std::this_thread::sleep_for(std::chrono::seconds(1));
-			// and attempt reconnect.
+			// Grab will naturally block waiting for the next frame.
+			if (Cam.Grab()){
+				const CFrame& frame = Cam.CurrentFrame();
+				if (!WriteNextFrame(frame, converter))
+					Ok = false;
+			}
+			else {
+				// Lost stream?
+				m_ErrorLog += "\n Grab failed \n";
+				Ok = false;
+				// alternatively, sleep for a while - std::this_thread::sleep_for(std::chrono::seconds(1));
+				// and attempt reconnect.
+			}
 		}
-
-		const CFrame& frame = Cam.CurrentFrame();
-		if (!CacheSharedFrame(frame, converter))
-			break; // error
 	}
 	m_RunCode.store(RUNCODE_DEAD, std::memory_order_release);
 }
-#endif
+
+void CCameraThread::Start(const std::string &url)
+{
+	// Start the camera thread. This function is called from the consumer thread.
+	if(m_RunCode.load(std::memory_order_relaxed) == RUNCODE_DEAD){
+		m_CamURL = url;
+		m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
+		std::thread ct(&CCameraThread::Run, this);
+		ct.detach();
+	}
+}
 
 void CCameraThread::Terminate()
 {
-	// function will block until camera thread has stopped.
-	// todo - check this function with chatGPT.
+	// function will block until thread has stopped.
 	if (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD){
 		// kill thread.
 		m_RunCode.store(RUNCODE_KILL, std::memory_order_relaxed);
 		// wait for thread to terminate.
 		while (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD)
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+	}
+}
+
+//####################################################################################################################################
+
+bool CImageProcessingThread::CopyFrame(CFrame *pSource, CImageMem *pDest)
+{
+	if (pDest->pBits == nullptr){
+		pDest->Wd      = pSource->Width();
+		pDest->Ht      = pSource->Height();
+		pDest->Span    = pSource->LineSize();
+		pDest->Planes  = pDest->Span / pDest->Wd;
+		pDest->Padding = pDest->Span - (pDest->Wd * pDest->Planes);
+		pDest->Size    = pDest->Span * pDest->Ht;
+
+		if (pDest->Span != pDest->Wd*3){
+			// for now I'm only allowing RGB24 with no padding at the end of each line. If the camera is returning a different format, then the 
+			// CImageConverter class should not be converting to RGB24 (which it might well do at the mo?), it should preserve the original format.
+			m_ErrorLog += "\n error - currently frame must be RGB24 with no padding at end of line \n";
+			return false;
+		}
+		pDest->Allocate();
+
+		// The image buffer allocated above is a wasteful copy of the image data, because the GDI wont except this buffer when creating the DIBSection, 
+		// so the better option is to call CreateDIBSection (here) and use the DIBSection's buffer directly, but that would require GDI code in this class, which I 
+		// want to avoid. Or a complicated messy callback - which i might implement in due course. But for now, just copy the data into the intermediate buffer.
+
+		// Another way of looking at it is, the GUI should not be displaying the live image all the time, the display should be off most the time with just the image 
+		// detection running in the background, and only when the user wants to see the image should the GUI be updated. In which case this intermediate buffer is not a big deal.
+		
+	//	if (m_InitialiseDIBCallback)
+	//		m_InitialiseDIBCallback(pDest, pSource->Width(), pSource->Height(), m_pCallbackParam);
+	}
+
+	if (pDest->pBits){
+		if (pDest->Wd!=pSource->Width() || pDest->Ht!=pSource->Height() || pDest->Span!=pSource->LineSize()){
+			// Frame size changed, this won't happen, so its an error.
+			m_ErrorLog += "\n Frame size changed \n";
+			return false;
+		}
+		// Copy the RGB data from the frame into our (ring) buffer.
+		memcpy(pDest->pBits, pSource->Data(), pDest->Size);
+		return true;
+	}
+	m_ErrorLog += "\n Frame data is null \n";
+	return false;
+}
+
+bool CImageProcessingThread::DoImageProcessing(CImageMem *pImg)
+{
+	// Image processing logic here, eg, object detection.
+	// write results to a log file or database.
+
+	for(int i=0; i<pImg->Ht; i++){
+		uint8_t *pLine = pImg->pBits + (i * pImg->Span);
+		for(int j=0; j<pImg->Wd; j++){
+			uint8_t *r = &pLine[j*pImg->Planes + 0];
+			uint8_t *g = &pLine[j*pImg->Planes + 1];
+			uint8_t *b = &pLine[j*pImg->Planes + 2];
+			
+			// do something with r,g,b
+			*r = 255 - *r;	// invert red channel
+		//	*g = 255 - *g;	// invert green channel
+		//	*b = 255 - *b;	// invert blue channel
+		}
+	}
+	return true;
+}
+
+bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
+{
+	bool Ok = true;
+	CImageMem *pIM = m_RingBuf.AcquireWrite();
+	if (pIM){
+		Ok = false;
+		if (CopyFrame(pRgbFrame, pIM))
+			if (DoImageProcessing(pIM))
+				Ok = true;
+
+		m_RingBuf.ReleaseWrite();
+		// Optional callback for consumer specific instructions now we have processed a new frame (eg, PostMessage 
+		// to the GUI thread to call ReadNextFrame and update display).
+		if (m_FrameReadyCallback)
+			m_FrameReadyCallback(0, m_pCallbackParam);
+	}
+	else {
+		// Frame dropped, ring buffer is full. The consumer (GUI thread) is slower than the producer (this image processing thread) at the moment.
+	}
+
+	// so hang on, this producer should not (always) be waiting for the consumer (GUI thread) to read a frame and therefore free up a slot in the ring buffer,
+	// because the GUI will not be displaying most the time and image processing will be a background task. So if the GUI display is off then we can call 
+	// AcquireRead/ReleaseRead for every AcquireWrite/ReleaseWrite so that the ring buffer is always empty ready for the next frame from the camera thread.
+
+/*	if (RunningInBackground){
+		if (m_RingBuf.AcquireRead())
+			m_RingBuf.ReleaseRead();
+	}*/
+	return Ok;
+}
+
+void CImageProcessingThread::GetNextFrame()
+{
+	// This function is called in the consumer thread. Alternatively, the consumer can just call CameraThreadObject::m_RingBuf.AcquireRead()  
+	// directly and then process the frame, in which case this function will not be used.
+	CImageMem *pBuf = m_RingBuf.AcquireRead();
+	if (pBuf){
+		// Callback for consumer specific code.
+		if (m_GetNextFrameCallback)
+			m_GetNextFrameCallback(pBuf, m_pCallbackParam);
+		m_RingBuf.ReleaseRead();
+	}
+	else {
+		// No frame available. The producer is slower than the consumer at the moment.
+	}
+}
+
+void CImageProcessingThread::Run()
+{
+	// To do - proper error reporting for when thread exits unexpectedly.
+
+	bool Ok = true;
+	m_RingBuf.Initialise();
+	while (m_RunCode.load(std::memory_order_relaxed)==RUNCODE_ALIVE && Ok){
+
+		CFrame *pRgbFrame = m_pCamThread->m_RingBuf.AcquireRead(); // @@@@@ DONT LIKE THIS ???, I THINK THE CALLBACK METHOD SHOULD BE USED INSTEAD?
+		if (pRgbFrame){
+			Ok = WriteNextFrame(pRgbFrame);
+			m_pCamThread->m_RingBuf.ReleaseRead();
+		}
+		else {
+			// No frame available. The producer (camera thread) is slower than the consumer (this hread) at the moment.
+			std::this_thread::sleep_for(std::chrono::milliseconds(25));
+		}
+	}
+	m_RunCode.store(RUNCODE_DEAD, std::memory_order_release);
+}
+
+void CImageProcessingThread::Terminate()
+{
+	// function will block until thread has stopped.
+	if (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD){
+		// kill thread.
+		m_RunCode.store(RUNCODE_KILL, std::memory_order_relaxed);
+		// wait for thread to terminate.
+		while (m_RunCode.load(std::memory_order_relaxed) != RUNCODE_DEAD)
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+	}
+}
+
+void CImageProcessingThread::Start( CCameraThread *pCamThread,
+									void (*FrameReadyCallback)(int Code, void *pParam), 
+									void (*GetNextFrameCallback)(const CImageMem *pImage, void *pParam), 
+									void *pCallbackParam )
+{
+	// std::thread : https://en.cppreference.com/cpp/thread/thread/thread
+	if (m_RunCode.load(std::memory_order_relaxed) == RUNCODE_DEAD){
+		m_pCamThread = pCamThread;
+		m_FrameReadyCallback = FrameReadyCallback;
+		m_GetNextFrameCallback = GetNextFrameCallback;
+		m_pCallbackParam = pCallbackParam;
+
+		m_RunCode.store(RUNCODE_ALIVE, std::memory_order_relaxed);
+		std::thread ipt(&CImageProcessingThread::Run, this); // ipt runs CImageProcessingThread::Run on this object 
+		ipt.detach();
 	}
 }
 
