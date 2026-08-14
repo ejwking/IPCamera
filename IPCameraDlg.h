@@ -17,7 +17,6 @@ struct MEMORYDC
 	int        InitBitmap=0, InitDC=0;
 };
 
-
 // CIPCameraDlg dialog
 class CIPCameraDlg : public CDialogEx
 {
@@ -25,7 +24,9 @@ class CIPCameraDlg : public CDialogEx
 public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
-	CCameraThread m_CamThread;
+	SPSCRingBuffer<CFrame,    MAX_FRAMES> m_CameraToProcessor;
+	SPSCRingBuffer<CImageMem, MAX_FRAMES> m_ProcessorToGui;
+	CCameraThread          m_CamThread;
 	CImageProcessingThread m_ImgProcThread;
 
 	CString   m_CameraURL;

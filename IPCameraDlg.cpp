@@ -6,7 +6,8 @@
 #include "IPCamera.h"
 #include "IPCameraDlg.h"
 #include "afxdialogex.h"
-#include <thread>
+#include "utilities.h"
+
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -17,27 +18,10 @@
 
 // "C:\\Users\\edwar\\Desktop\\lesser used media\\tiktok vids\\Download.mp4"
 // "rtsp://username:password@192.168.0.31:554/stream1"
+
 #define IP_CAMERA_URL _T("")
 #define REG_SECTION	_T("IPCameraWnd")
 #define WM_APP_FRAME_READY (WM_APP + 1)
-
-
-CString Utf8(const std::string& s)
-{
-	return CString(CA2W(s.c_str(), CP_UTF8));
-}
-
-// Convert UTF-16 (std::wstring) to UTF-8 (std::string)
-std::string Utf16ToUtf8(const std::wstring& utf16Str)
-{
-	if (utf16Str.empty()) return "";
-
-	int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, &utf16Str[0], (int)utf16Str.size(), NULL, 0, NULL, NULL);
-	std::string utf8Str(sizeNeeded, 0);
-	WideCharToMultiByte(CP_UTF8, 0, &utf16Str[0], (int)utf16Str.size(), &utf8Str[0], sizeNeeded, NULL, NULL);
-
-	return utf8Str;
-}
 
 
 CIPCameraDlg::CIPCameraDlg(CWnd* pParent /*=nullptr*/)
@@ -111,7 +95,6 @@ void CIPCameraDlg::OnPaint()
 	}
 	else{
 		CDialogEx::OnPaint();
-
 	//	static int ct=0;
 	//	TRACE("\n ##### OnPaint %d #####  ", ct++);
 	}
@@ -168,26 +151,29 @@ void CIPCameraDlg::FreeBitmapObjects(MEMORYDC *pMDC)
 
 LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 {
-	// This is called from the GUI thread (in response to a posted WM_APP_FRAME_READY message), and will 
-	// result in a call to GetNextFrameCallback() which will update the display with the new frame.
+	// This is called in the GUI thread in response to the WM_APP_FRAME_READY message posted in the image processing thread.
 	if (m_pDC == nullptr)
 		m_pDC = this->GetDC();
-	m_ImgProcThread.GetNextFrame();
-	return 0;
-}
 
-void GetNextFrameCallback(const CImageMem *pImage, void *pParam)
-{
-	if (pParam){
-		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
-		if (pDlg->m_pDC){
-			if (pDlg->InitDisplayDC(pDlg->m_pDC, &pDlg->m_Pic, pImage->Wd, pImage->Ht)){
-				memcpy(pDlg->m_Pic.pBits, pImage->pBits, pImage->Size);
-				pDlg->m_pDC->BitBlt(0, 0, pImage->Wd, pImage->Ht, &pDlg->m_Pic.DC, 0, 0, SRCCOPY);
+	CImageMem *pBuf = m_ProcessorToGui.AcquireRead();
+	if (pBuf){
+		if (m_pDC){
+			if (InitDisplayDC(m_pDC, &m_Pic, pBuf->Wd, pBuf->Ht)){
+				memcpy(m_Pic.pBits, pBuf->pBits, pBuf->Size);
+				m_pDC->BitBlt(0, 0, pBuf->Wd, pBuf->Ht, &m_Pic.DC, 0, 0, SRCCOPY);
 				// alternatively, call InvalidateRect(...) and do the painting in OnPaint().
 			}
 		}
+		m_ProcessorToGui.ReleaseRead();
 	}
+	else {
+		// No frame available.
+		// ...which shouldnt usually be the case because this message handler is only called after the FrameReadyCallback posts a WM_APP_FRAME_READY.
+		// actually think about it, if WM_APP_FRAME_READY messages were not processed immediately and queued up, then m_ProcessorToGui would get full
+		// and start dropping frames. Then when this side catches up and processes all the WM_APP_FRAME_READY messages, some will be empty (no frame)
+		// due to the dropped frames - thats all fine.
+	}
+	return 0;
 }
 
 void FrameReadyCallback(int Code, void *pParam)
@@ -205,12 +191,9 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 {
 	static int once=0;
 	if (once == 0){
-		
 		once = 1;
-		m_CamThread.Start(Utf16ToUtf8(m_CameraURL.GetString()));
-		m_ImgProcThread.Start(&m_CamThread, FrameReadyCallback, GetNextFrameCallback, (void*)this);
-
-		// check with chatGPT that 'this' pointers are still the modern way to do things.
+		m_CamThread.Start(Utf16ToUtf8(m_CameraURL.GetString()), &m_CameraToProcessor);
+		m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, FrameReadyCallback, (void*)this);
 	}
 }
 
@@ -228,19 +211,12 @@ void CIPCameraDlg::RgbFrameDrawTest(const CFrame& rgbFrame)
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// Separate thread for camera library.
 // 
-// Add image processing - ideas...
+// image processing ideas...
 //  - plate finder
 //  - OpenCV for OCR, motion detection, and what else does it do?
 //  - Darknet for object detection
 //  - maybe Ollama and a LLM ( Gemma4 ).
 // 
-// another thread for image processing.
-// 
-// Put camera library and image processing in a DLL so that the GUI can be replaced with another GUI framework or web interface.
-// 
-// LINUX version to run on my RPi.
-// GUI for linux - wxWidgets. Or a web interface.
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
