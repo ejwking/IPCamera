@@ -24,10 +24,12 @@ class CIPCameraDlg : public CDialogEx
 public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
-	SPSCRingBuffer<CFrame,    MAX_FRAMES> m_CameraToProcessor;
-	SPSCRingBuffer<CImageMem, MAX_FRAMES> m_ProcessorToGui;
-	CCameraThread          m_CamThread;
-	CImageProcessingThread m_ImgProcThread;
+	CFrame    m_Frame[3];
+	CImageMem m_ImageMem[3];
+	SPSCRingBuffer<CFrame>    m_CameraToProcessor;
+	SPSCRingBuffer<CImageMem> m_ProcessorToGui;
+	CCameraThread             m_CamThread;
+	CImageProcessingThread    m_ImgProcThread;
 
 	CString   m_CameraURL;
 	MEMORYDC  m_Pic;
@@ -57,6 +59,7 @@ protected:
 
 public:
 	afx_msg void OnDestroy();
+	afx_msg LRESULT OnCameraReady(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnFrameReady(WPARAM wParam, LPARAM lParam);
 	afx_msg void OnBnClickedBtnConnect();
 };

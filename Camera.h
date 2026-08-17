@@ -92,119 +92,127 @@ private:
 // 
 // Producer:  Frame written  ->  Advance head, NumFrames++  ->  Consumer can read
 // Consumer:  Frame read     ->  Advance tail, NumFrames--  ->  Producer can reuse
-template <typename Ty, int MAX_ENTRIES> class SPSCRingBuffer
+template <typename Ty> class SPSCRingBuffer
 {
 private:
-	Ty  m_Buf[MAX_ENTRIES];
+	Ty *m_pBuf = nullptr;
+	int m_Max = 0;
 	int m_TailIndex = 0;		// consumer only
 	int m_HeadIndex = 0;		// producer only
 	std::atomic<int> m_Num{0};	// producer/consumer shared.
 public:
-	void Initialise()
+	void AssignBuffer(Ty *pBuf, int NumEntries)
 	{
-		m_HeadIndex = 0;	// Head = next index the producer will write.
-		m_TailIndex = 0;	// Tail = next index the consumer will read.
-		m_Num.store(0, std::memory_order_relaxed);	// m_Num = number of completed entries currently in the buffer.
+		m_pBuf = pBuf;
+		m_Max = NumEntries;
+	}
+	bool InitRing()
+	{
+		if (m_pBuf){
+			m_HeadIndex = 0;	// Head = next index the producer will write.
+			m_TailIndex = 0;	// Tail = next index the consumer will read.
+			m_Num.store(0, std::memory_order_relaxed);	// m_Num = number of completed entries currently in the buffer.
+			return true;
+		}
+		return false;
 	}
 	Ty *AcquireRead()
 	{
 		if (m_Num.load(std::memory_order_acquire) > 0)
-			return &m_Buf[m_TailIndex];	// consumer can read entry at m_TailIndex.
+			return &m_pBuf[m_TailIndex];	// consumer can read entry at m_TailIndex.
 		return nullptr;
 	}
 	void ReleaseRead()
 	{
 		m_TailIndex++;
-		if (m_TailIndex == MAX_ENTRIES)	// ring buffer - wraparound back to start.
+		if (m_TailIndex == m_Max)	// ring buffer - wraparound back to start.
 			m_TailIndex = 0;
 		// Release the entry back to producer by subtracting 1 from m_Num.
 		m_Num.fetch_sub(1, std::memory_order_release);
 	}
 	Ty *AcquireWrite()
 	{
-		if (m_Num.load(std::memory_order_acquire) < MAX_ENTRIES)
-			return &m_Buf[m_HeadIndex];	// producer can write entry at m_HeadIndex.
+		if (m_Num.load(std::memory_order_acquire) < m_Max)
+			return &m_pBuf[m_HeadIndex];	// producer can write entry at m_HeadIndex.
 		return nullptr;
 	}
 	void ReleaseWrite()
 	{
 		m_HeadIndex++;
-		if (m_HeadIndex == MAX_ENTRIES)	// ring buffer - wraparound back to start.
+		if (m_HeadIndex == m_Max)	// ring buffer - wraparound back to start.
 			m_HeadIndex = 0;
 		// Publish the completed entry by adding 1 to m_Num.
 		m_Num.fetch_add(1, std::memory_order_release);
 	}
 };
 
-#define MAX_FRAMES 3
+class CImageMem
+{
+public:
+	void    *pGuiData=nullptr;
+	uint8_t	*pBits=nullptr;
+	int      Wd=0, Ht=0, Planes=0, Span=0, Padding=0, Size=0;
+	CImageMem(){}
+	~CImageMem()
+	{
+		if(pBits) // temporary
+			delete[] pBits;
+	}
+	void Allocate()
+	{
+		if (Size>0 && !pBits) // temporary
+			pBits = new uint8_t[Size];
+	}
+};
+
+#define CAMERA_READY_PARAMS	int Wd, int Ht, void *pParam
 
 class CCameraThread
 {
 public:
 	CCameraThread(){}
 	~CCameraThread(){ Terminate(); }
-
-	void Start(const std::string& url, SPSCRingBuffer<CFrame, MAX_FRAMES> *pRingBuffer);
+	// TO DO - caller needs to specify the required image format, eg, RGB 24bit, or greyscale 8bit.
+	void Start(const std::string& url, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam);
 	void Terminate();
 
 private:
-	SPSCRingBuffer<CFrame, MAX_FRAMES> *m_pRingBuf;
+	SPSCRingBuffer<CFrame> *m_pRingBuf=nullptr;
+
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
 	std::string       m_ErrorLog, m_CamURL;
+	void             *m_pCallbackParam;
 
 	void Run();
 	bool WriteNextFrame(const CFrame& frame, CImageConverter& converter);
+	void (*m_CameraReadyCallback)(CAMERA_READY_PARAMS) = nullptr;
 };
 
-
-class CImageMem
-{
-public:
-	uint8_t	*pBits=nullptr;
-	int      Wd=0, Ht=0, Planes=0, Span=0, Padding=0, Size=0;
-	CImageMem(){}
-	~CImageMem()
-	{
-		if(pBits)
-			delete[] pBits;
-	}
-	void Allocate()
-	{
-		if (Size>0 && !pBits)
-			pBits = new uint8_t[Size];
-	}
-};
+#define FRAME_READY_PARAMS int Code, void *pParam
 
 class CImageProcessingThread
 {
 public:
 	CImageProcessingThread(){}
 	~CImageProcessingThread(){ Terminate(); }
-
-	void Start(	SPSCRingBuffer<CFrame, MAX_FRAMES> *pInputRingBuffer,
-				SPSCRingBuffer<CImageMem, MAX_FRAMES> *pOutputRingBuffer,
-				void (*FrameReadyCallback)(int Code, void *pParam), 
-				void *pCallbackParam);
+	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<CImageMem> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam);
 	void Terminate();
 
 private:
-	SPSCRingBuffer<CFrame,    MAX_FRAMES> *m_pInputRingBuf=nullptr;
-	SPSCRingBuffer<CImageMem, MAX_FRAMES> *m_pOutputRingBuf=nullptr;
+	SPSCRingBuffer<CFrame>    *m_pInputRingBuf=nullptr;
+	SPSCRingBuffer<CImageMem> *m_pOutputRingBuf=nullptr;
 
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
-
-	std::string m_ErrorLog;
-	void       *m_pCallbackParam;
+	std::string       m_ErrorLog;
+	void             *m_pCallbackParam;
 
 	void Run();
 	bool CopyFrame(CFrame *pSource, CImageMem *pDest);
 	bool DoImageProcessing(CImageMem *pImg);
 	bool WriteNextFrame(CFrame *pRgbFrame);
-
-	void (*m_FrameReadyCallback)(int Code, void *pParam) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
-	//void (*m_InitialiseDIBCallback)(CImageMem*, int, int, void*) = nullptr;
+	void (*m_FrameReadyCallback)(FRAME_READY_PARAMS) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
 };
 
 

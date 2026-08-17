@@ -369,18 +369,19 @@ bool CCameraThread::WriteNextFrame(const CFrame& frame, CImageConverter& convert
 {
 	// This function is called in the producer thread after a new frame has been grabbed from the camera. 
 	// It converts the frame to RGB and writes it to the ring buffer.
+	bool Ok = true;
 	CFrame *pBuf = m_pRingBuf->AcquireWrite();
 	if (pBuf){
 		if (!converter.Convert(frame, *pBuf, true)){
 			m_ErrorLog += "\n convert to rgb failed \n";
-			return false;
+			Ok = false;
 		}
 		m_pRingBuf->ReleaseWrite();
 	}
 	else {
 		// Frame dropped, ring buffer is full. The consumer is slower than the producer at the moment.
 	}
-	return true; 
+	return Ok;
 }
 
 void CCameraThread::Run()
@@ -389,12 +390,18 @@ void CCameraThread::Run()
 	CCamera Cam;
 	if (!Cam.Open(m_CamURL)){
 		m_ErrorLog += "\n Open failed \n";
+		return;
+	}
+	// Open succeeded, now we can grab frames. Some initialisation first.
+	if (m_CameraReadyCallback)
+		m_CameraReadyCallback(Cam.m_VideoInfo.width, Cam.m_VideoInfo.height, m_pCallbackParam);
+
+	if (!m_pRingBuf->InitRing()){
+		m_ErrorLog += "\n Ring buffer InitRing()==false \n";
 	}
 	else {
-		// Open succeeded, now we can grab frames.
 		bool Ok = true;
 		CImageConverter converter;
-		m_pRingBuf->Initialise();
 		while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 
 			// Grab will naturally block waiting for the next frame.
@@ -414,11 +421,13 @@ void CCameraThread::Run()
 	}
 }
 
-void CCameraThread::Start(const std::string &url, SPSCRingBuffer<CFrame, MAX_FRAMES> *pRingBuffer)
+void CCameraThread::Start(const std::string &url, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
-		m_CamURL = url;	// copy
+		m_CamURL = url;
 		m_pRingBuf = pRingBuffer;
+		m_CameraReadyCallback = CameraReadyCallback;
+		m_pCallbackParam = pCallbackParam;
 		m_StopRequested.store(false, std::memory_order_relaxed);
 		m_Thread = std::thread(&CCameraThread::Run, this);
 	}
@@ -436,37 +445,9 @@ void CCameraThread::Terminate()
 
 bool CImageProcessingThread::CopyFrame(CFrame *pSource, CImageMem *pDest)
 {
-	if (pDest->pBits == nullptr){
-		pDest->Wd      = pSource->Width();
-		pDest->Ht      = pSource->Height();
-		pDest->Span    = pSource->LineSize();
-		pDest->Planes  = pDest->Span / pDest->Wd;
-		pDest->Padding = pDest->Span - (pDest->Wd * pDest->Planes);
-		pDest->Size    = pDest->Span * pDest->Ht;
-
-		if (pDest->Span != pDest->Wd*3){
-			// for now I'm only allowing RGB24 with no padding at the end of each line. If the camera is returning a different format, then the 
-			// CImageConverter class should not be converting to RGB24 (which it might well do at the mo?), it should preserve the original format.
-			m_ErrorLog += "\n error - currently frame must be RGB24 with no padding at end of line \n";
-			return false;
-		}
-		pDest->Allocate();
-
-		// The image buffer allocated above is a wasteful copy of the image data, because the GDI wont except this buffer when creating the DIBSection, 
-		// so the better option is to call CreateDIBSection (here) and use the DIBSection's buffer directly, but that would require GDI code in this class, which I 
-		// want to avoid. Or a complicated messy callback - which i might implement in due course. But for now, just copy the data into the intermediate buffer.
-
-		// Another way of looking at it is, the GUI should not be displaying the live image all the time, the display should be off most the time with just the image 
-		// detection running in the background, and only when the user wants to see the image should the GUI be updated. In which case this intermediate buffer is not a big deal.
-		
-	//	if (m_InitialiseDIBCallback)
-	//		m_InitialiseDIBCallback(pDest, pSource->Width(), pSource->Height(), m_pCallbackParam);
-	}
-
 	if (pDest->pBits){
 		if (pDest->Wd!=pSource->Width() || pDest->Ht!=pSource->Height() || pDest->Span!=pSource->LineSize()){
-			// Frame size changed, this won't happen, so its an error.
-			m_ErrorLog += "\n Frame size changed \n";
+			m_ErrorLog += "\n Source and destination frame dimensions do not match \n";
 			return false;
 		}
 		// Copy the RGB data from the frame into our (ring) buffer.
@@ -491,15 +472,14 @@ bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 	bool Ok = true;
 	CImageMem *pIM = m_pOutputRingBuf->AcquireWrite();
 	if (pIM){
-		Ok = false;
-		if (CopyFrame(pRgbFrame, pIM))
-			if (DoImageProcessing(pIM))
-				Ok = true;
+		if (!CopyFrame(pRgbFrame, pIM))
+			Ok = false;
+		else if (!DoImageProcessing(pIM))
+			Ok = false;
 
 		m_pOutputRingBuf->ReleaseWrite();
-		// Optional callback for consumer specific instructions now we have processed a new frame (eg, PostMessage 
-		// to the GUI thread to call ReadNextFrame and update display).
-		if (m_FrameReadyCallback)
+		// Optional callback for consumer specific instructions now we have processed a new frame.
+		if (Ok && m_FrameReadyCallback)
 			m_FrameReadyCallback(0, m_pCallbackParam);
 	}
 	else {
@@ -519,8 +499,11 @@ bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 void CImageProcessingThread::Run()
 {
 	// To do - proper error reporting for when thread exits unexpectedly.
+	if (!m_pOutputRingBuf->InitRing()){
+		m_ErrorLog += "\n Ring buffer InitRing()==false \n";
+		return;
+	}
 	bool Ok = true;
-	m_pOutputRingBuf->Initialise();
 	while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 		CFrame *pRgbFrame = m_pInputRingBuf->AcquireRead();
 		if (pRgbFrame){
@@ -542,10 +525,7 @@ void CImageProcessingThread::Terminate()
 	}
 }
 
-void CImageProcessingThread::Start(	SPSCRingBuffer<CFrame, MAX_FRAMES> *pInputRingBuffer,
-									SPSCRingBuffer<CImageMem, MAX_FRAMES> *pOutputRingBuffer,
-									void (*FrameReadyCallback)(int Code, void *pParam), 
-									void *pCallbackParam )
+void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<CImageMem> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_pInputRingBuf = pInputRingBuffer;
