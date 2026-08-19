@@ -7,15 +7,30 @@
 #include "Camera.h"
 
 
-struct MEMORYDC
+#define NUM_IMGPROC_FRAMES	3
+
+
+class CMyBitmap
 {
-	HBITMAP    hBitmap=nullptr;
-	BITMAPINFO bmi={0};
-	uint8_t	  *pBits=nullptr;
-	CDC        DC;	// or HDC? ..CDC better cos I can use GDI functions using class '->' syntax.
-//	int        Wd=0, Ht=0;
-	int        InitBitmap=0, InitDC=0;
+public:
+	HBITMAP    m_hBitmap=nullptr;
+	BITMAPINFO m_BMI={0};
+	uint8_t	  *m_pData=nullptr;
+	CDC        m_MemDC;	// virtual drawing surface in memory.
+
+	CMyBitmap(){}
+	~CMyBitmap(){ Delete(); }
+	bool Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel);
+	void Delete();
 };
+
+
+class CIPCamera
+{
+	// put everything in here for controlling it, because 
+	// it shouldnt be mixed up in CIPCameraDlg ???
+};
+
 
 // CIPCameraDlg dialog
 class CIPCameraDlg : public CDialogEx
@@ -24,20 +39,17 @@ class CIPCameraDlg : public CDialogEx
 public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
-	CFrame    m_Frame[3];
-	CImageMem m_ImageMem[3];
-	SPSCRingBuffer<CFrame>    m_CameraToProcessor;
-	SPSCRingBuffer<CImageMem> m_ProcessorToGui;
-	CCameraThread             m_CamThread;
-	CImageProcessingThread    m_ImgProcThread;
+	CFrame m_Frame[3];
+	SPSCRingBuffer<CFrame> m_CameraToProcessor;
+	CCameraThread m_CamThread;
 
-	CString   m_CameraURL;
-	MEMORYDC  m_Pic;
-	CDC      *m_pDC=nullptr;
+	CMyBitmap m_GuiData[NUM_IMGPROC_FRAMES];
+	PROCESSED_FRAME m_ProcessedFrame[NUM_IMGPROC_FRAMES];
+	SPSCRingBuffer<PROCESSED_FRAME> m_ProcessorToGui;
+	CImageProcessingThread m_ImgProcThread;
 
-	void FreeBitmapObjects(MEMORYDC *pMDC);
-	int  InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht);
-	void RgbFrameDrawTest(const CFrame& rgbFrame);
+	CString m_CameraURL;
+	CDC    *m_pDC=nullptr;
 
 // Dialog Data
 #ifdef AFX_DESIGN_TIME

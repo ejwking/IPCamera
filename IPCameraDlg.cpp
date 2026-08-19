@@ -69,7 +69,6 @@ void CIPCameraDlg::OnDestroy()
 	// TODO: Add your message handler code here
 	m_CamThread.Terminate();
 	m_ImgProcThread.Terminate();
-	FreeBitmapObjects(&m_Pic);
 	AfxGetApp()->WriteProfileString(REG_SECTION, _T("ip_camera_url"), m_CameraURL);
 }
 
@@ -97,6 +96,8 @@ void CIPCameraDlg::OnPaint()
 	}
 	else{
 		CDialogEx::OnPaint();
+		if (m_pDC == nullptr)
+			m_pDC = this->GetDC();
 	//	static int ct=0;
 	//	TRACE("\n ##### OnPaint %d #####  ", ct++);
 	}
@@ -108,63 +109,57 @@ HCURSOR CIPCameraDlg::OnQueryDragIcon()
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
-int CIPCameraDlg::InitDisplayDC(CDC *pDC, MEMORYDC *pMemDC, int Wd, int Ht)
+bool CMyBitmap::Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel)
 {
-	if (pMemDC->InitDC==0 || pMemDC->InitBitmap==0){
-		FreeBitmapObjects(pMemDC);
-		memset(&pMemDC->bmi.bmiHeader, 0, sizeof(pMemDC->bmi.bmiHeader));
-		pMemDC->bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-		pMemDC->bmi.bmiHeader.biWidth       = Wd;
-		pMemDC->bmi.bmiHeader.biHeight      = -Ht;	// HARD CODED (HACK??) - negative height to create a top-down DIB
-		pMemDC->bmi.bmiHeader.biPlanes      = 1;	// ???
-		pMemDC->bmi.bmiHeader.biBitCount    = 24;	// HARD CODED, FIX THIS
-		pMemDC->bmi.bmiHeader.biCompression = BI_RGB;
+	if (m_hBitmap){
+		::AfxMessageBox(_T("error - CMyBitmap. Bitmap already created "));
+	}
+	else {
+		memset(&m_BMI.bmiHeader, 0, sizeof(m_BMI.bmiHeader));
+		m_BMI.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+		m_BMI.bmiHeader.biWidth       = Wd;
+		m_BMI.bmiHeader.biHeight      = -Ht;		// HARD CODED (HACK??) - negative height to create a top-down DIB
+		m_BMI.bmiHeader.biPlanes      = 1;			// ???
+		m_BMI.bmiHeader.biBitCount    = BitsPerPixel;
+		m_BMI.bmiHeader.biCompression = BI_RGB;
 		void *pBitmapBits;
-		pMemDC->hBitmap = CreateDIBSection(0, &pMemDC->bmi, DIB_RGB_COLORS, &pBitmapBits, 0, 0);
-
-		if (pMemDC->hBitmap){
-			pMemDC->pBits = (uint8_t*)pBitmapBits;
-			pMemDC->InitBitmap = 1;
-			if (pMemDC->DC.CreateCompatibleDC(pDC)){
-				pMemDC->DC.SelectObject(pMemDC->hBitmap);
-				pMemDC->InitDC = 1;
+		m_hBitmap = CreateDIBSection(0, &m_BMI, DIB_RGB_COLORS, &pBitmapBits, 0, 0);
+		if (m_hBitmap){
+			m_pData = (uint8_t*)pBitmapBits;
+			if (m_MemDC.CreateCompatibleDC(pDC)){
+				m_MemDC.SelectObject(m_hBitmap);
+				return true;
 			}
 		}
 	}
-
-	if (pMemDC->InitDC && pMemDC->InitBitmap){
-		if (pMemDC->bmi.bmiHeader.biWidth==Wd && abs(pMemDC->bmi.bmiHeader.biHeight)==Ht)
-			return 1;
-		// bitmap size has changed, I dont want to cope with this because it shouldn't happen - and if i did we would not want to keep deleting/creating bitmaps.
-		::AfxMessageBox(_T("error - Bitmap size has changed."));
-	}
-	return 0;
+	return false;
 }
 
-void CIPCameraDlg::FreeBitmapObjects(MEMORYDC *pMDC)
+void CMyBitmap::Delete()
 {
-	if (pMDC->InitDC)
-		pMDC->DC.DeleteDC();
-	pMDC->InitDC = 0;
-	if (pMDC->InitBitmap)
-		DeleteObject(pMDC->hBitmap);
-	pMDC->InitBitmap = 0;
+	if (m_hBitmap){
+		m_MemDC.DeleteDC();
+		DeleteObject(m_hBitmap);
+		m_hBitmap = nullptr;
+	}
 }
 
 LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 {
 	// WM_APP_FRAME_READY message handler.
-	if (m_pDC == nullptr)
-		m_pDC = this->GetDC();
-
-	CImageMem *pBuf = m_ProcessorToGui.AcquireRead();
+	PROCESSED_FRAME *pBuf = m_ProcessorToGui.AcquireRead();
 	if (pBuf){
 		if (m_pDC){
+			/*	VERSION REQUIRING EXTRA COPY, as it uses an intermediate 'new' buffer rather than directly using a CreateDIBSection created buffer.
 			if (InitDisplayDC(m_pDC, &m_Pic, pBuf->Wd, pBuf->Ht)){
-				memcpy(m_Pic.pBits, pBuf->pBits, pBuf->Size);
+				memcpy(m_Pic.pData, pBuf->pData, pBuf->Size);
 				m_pDC->BitBlt(0, 0, pBuf->Wd, pBuf->Ht, &m_Pic.DC, 0, 0, SRCCOPY);
 				// alternatively, call InvalidateRect(...) and do the painting in OnPaint().
-			}
+			}*/
+
+			CMyBitmap *pMDC = (CMyBitmap*)pBuf->pGuiData;
+			if (pMDC)
+				m_pDC->BitBlt(0, 0, pBuf->Wd, pBuf->Ht, &pMDC->m_MemDC, 0, 0, SRCCOPY);
 		}
 		m_ProcessorToGui.ReleaseRead();
 	}
@@ -182,66 +177,48 @@ void FrameReadyCallback(int Code, void *pParam)
 {
 	// This is called in the image processing thread, not in the GUI thread. 
 	if (pParam){
-		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
+		HWND hWnd = (HWND)pParam;
 		// Post message - non-blocking will put in receiving window (GUI thread) message queue.
-		pDlg->PostMessage(WM_APP_FRAME_READY, 0, 0);
+		PostMessage(hWnd, WM_APP_FRAME_READY, 0, 0);
 	}
 }
 
 LRESULT CIPCameraDlg::OnCameraReady(WPARAM wParam, LPARAM lParam)
 {
 	// WM_APP_CAMERA_READY message handler.
-
-	if (m_pDC == nullptr)
-		m_pDC = this->GetDC();
-
 	int Wd = (int)wParam;
 	int Ht = (int)lParam;
-
-	// LineSize = image format (RGB 24, greyscale, ect) must be specified when opening the camera, that is how we will know it here.
-	// HARD CODED FOR NOW.
 	int LineSize = Wd * 3;
+	// LineSize = image format (RGB 24, greyscale, ect) must be specified when opening the camera, that is how we will know it here.
+	// @@@@@@@@@ HARD CODED FOR NOW.
 
-	for (int i=0; i<num_entries(m_ImageMem); i++){
+	bool Ok = true;
+	for (int i=0; i<num_entries(m_ProcessedFrame) && Ok; i++){
 
-		CImageMem *pI = &m_ImageMem[i];
-
-		pI->Wd      = Wd;
-		pI->Ht      = Ht;
-		pI->Span    = LineSize;
-		pI->Planes  = pI->Span / pI->Wd;
-		pI->Padding = pI->Span - (pI->Wd * pI->Planes);
-		pI->Size    = pI->Span * pI->Ht;
-
-		pI->Allocate();
-
-		// to do next, replace this allocate with buffer created here with CreateDIBSection.
-
-	/*	
-		MEMORYDC *pMdc = new MEMORYDC;
-
-		if (InitDisplayDC(m_pDC, pMdc, Wd, Ht)){ // m_pDC - why we passing a member @@@@
-		
-			pI->pGuiData = (void*)pMdc;
-			pI->pBits = pMdc->pBits;
+		PROCESSED_FRAME &PF = m_ProcessedFrame[i];
+		PF.Wd      = Wd;
+		PF.Ht      = Ht;
+		PF.Span    = LineSize;
+		PF.Planes  = PF.Span / PF.Wd;
+		PF.Padding = PF.Span - (PF.Wd * PF.Planes);
+	
+		if (i < num_entries(m_GuiData)){
+			if (m_GuiData[i].Create(m_pDC, Wd, Ht, 24)){
+				PF.pGuiData = (void*)&m_GuiData[i];
+				PF.pData    = m_GuiData[i].m_pData;
+			}
 		}
-
-		// cleanup, ideally invoked by the CImageMem destructor. otherwise loadsa manual cleanup calls becomes a liability.
-		// 1. FreeBitmapObjects
-		// 2. delete pGuiData, and null pBits, and zero wd ht.
-		*/
-
-
-		// The image buffer allocated above is a wasteful copy of the image data, because the GDI wont except this buffer when creating the DIBSection, 
-		// so the better option is to call CreateDIBSection (here) and use the DIBSection's buffer directly
-
-		// Another way of looking at it is, the GUI should not be displaying the live image all the time, the display should be off most the time with just the image 
-		// detection running in the background, and only when the user wants to see the image should the GUI be updated. In which case this intermediate buffer is not a big deal.
+		else {
+			// Rather than declaring m_GuiData (with index count matching m_ProcessedFrame), I could instead allocate memory for 
+			// PF.pGuiData in this loop. The disadvantge of doing that is the added complication to the cleanup code freeing the memory.
+			::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
+			Ok = false;
+		}
 	}
-
-	m_ProcessorToGui.AssignBuffer(m_ImageMem, num_entries(m_ImageMem));
-	m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, FrameReadyCallback, (void*)this);
-
+	if (Ok){
+		m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
+		m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, FrameReadyCallback, (void*)m_hWnd);
+	}
 	return 0;
 }
 
@@ -250,17 +227,17 @@ void CameraReadyCallback(int Wd, int Ht, void *pParam)
 	// This is called in the camera thread, not in the GUI thread. 
 	if (pParam){
 		TRACE("\n  CameraReadyCallback %d x %d  ", Wd, Ht);
-		CIPCameraDlg *pDlg = (CIPCameraDlg*)pParam;
+		HWND hWnd = (HWND)pParam;
 
 		// Send message - blocks execution until the receiving window (GUI thread) processes the message.
-		// pDlg->SendMessage(WM_APP_CAMERA_READY, (WPARAM)Wd, (LPARAM)Ht);
+		// SendMessage(WM_APP_CAMERA_READY, (WPARAM)Wd, (LPARAM)Ht);
 
 		// Using SendMessage is problematic here because, here is the scenario :
 		// Camera thread starts. Calls this callback but at that instant the window in closed, and m_CamThread.Terminate() is called in OnDestroy.
 		// Next, m_CamThread.Terminate() blocks the GUI thread until the camera thread terminates.
 		// But the camera thread cant terminate because SendMessage won't return until WM_APP_CAMERA_READY msg is processed.
 		// Conclusion - dont use SendMessage.
-		pDlg->PostMessage(WM_APP_CAMERA_READY, (WPARAM)Wd, (LPARAM)Ht);
+		PostMessage(hWnd, WM_APP_CAMERA_READY, (WPARAM)Wd, (LPARAM)Ht);
 	}
 }
 
@@ -270,25 +247,14 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 	if (once++ == 0){
 		m_CameraToProcessor.AssignBuffer(m_Frame, num_entries(m_Frame));
 		// to do - specify required image format (RGB 24, greyscale, ect).
-		m_CamThread.Start(Utf16ToUtf8(m_CameraURL.GetString()), &m_CameraToProcessor, CameraReadyCallback, (void*)this);
+		m_CamThread.Start(Utf16ToUtf8(m_CameraURL.GetString()), IMAGEFORMAT::IMGFMT_RGB24, &m_CameraToProcessor, CameraReadyCallback, (void*)m_hWnd);
 	}
 }
 
-void CIPCameraDlg::RgbFrameDrawTest(const CFrame& rgbFrame)
-{
-	for (int y = 0; y < rgbFrame.Height(); y++){
-		const uint8_t* scanline = rgbFrame.ScanLine(y);
-		for (int x = 0; x < rgbFrame.Width(); x++){
-			uint8_t r = scanline[x * 3 + 0];
-			uint8_t g = scanline[x * 3 + 1];
-			uint8_t b = scanline[x * 3 + 2];
-			m_pDC->SetPixel(x,y,RGB(r,g,b));
-		}
-	}
-}
 
 // image processing ideas...
 //  - plate finder
 //  - OpenCV for OCR, motion detection, and what else does it do?
 //  - Darknet for object detection
 //  - maybe Ollama and a LLM ( Gemma4 ).
+

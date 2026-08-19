@@ -401,7 +401,7 @@ void CCameraThread::Run()
 	}
 	else {
 		bool Ok = true;
-		CImageConverter converter;
+		CImageConverter converter; // PROBABLY better to have this as class member variable
 		while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 
 			// Grab will naturally block waiting for the next frame.
@@ -421,10 +421,11 @@ void CCameraThread::Run()
 	}
 }
 
-void CCameraThread::Start(const std::string &url, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam)
+void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_CamURL = url;
+		m_OutputFormat = Output;	// NOT YET IMPLEMENTED
 		m_pRingBuf = pRingBuffer;
 		m_CameraReadyCallback = CameraReadyCallback;
 		m_pCallbackParam = pCallbackParam;
@@ -443,38 +444,41 @@ void CCameraThread::Terminate()
 
 //####################################################################################################################################
 
-bool CImageProcessingThread::CopyFrame(CFrame *pSource, CImageMem *pDest)
+bool CImageProcessingThread::CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest)
 {
-	if (pDest->pBits){
+	if (pDest->pData){
 		if (pDest->Wd!=pSource->Width() || pDest->Ht!=pSource->Height() || pDest->Span!=pSource->LineSize()){
-			m_ErrorLog += "\n Source and destination frame dimensions do not match \n";
+			m_ErrorLog += "\n Source and destination frame dimensions do not match, (camera resolution changed?) \n";
 			return false;
 		}
 		// Copy the RGB data from the frame into our (ring) buffer.
-		memcpy(pDest->pBits, pSource->Data(), pDest->Size);
+		int Size = pDest->Span * pDest->Ht;
+		memcpy(pDest->pData, pSource->Data(), Size);
 		return true;
 	}
 	m_ErrorLog += "\n Frame data is null \n";
 	return false;
 }
 
-bool CImageProcessingThread::DoImageProcessing(CImageMem *pImg)
+bool CImageProcessingThread::DoImageProcessing(PROCESSED_FRAME *pFrame)
 {
 	// Image processing logic here, eg, object detection.
 	// write results to a log file or database.
-	if (!Image_Processing(pImg))
+	if (!Image_Processing(pFrame)){
+		m_ErrorLog += "\n error - image processing \n";
 		return false;
+	}
 	return true;
 }
 
 bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 {
 	bool Ok = true;
-	CImageMem *pIM = m_pOutputRingBuf->AcquireWrite();
-	if (pIM){
-		if (!CopyFrame(pRgbFrame, pIM))
+	PROCESSED_FRAME *pBuf = m_pOutputRingBuf->AcquireWrite();
+	if (pBuf){
+		if (!CopyFrame(pRgbFrame, pBuf))
 			Ok = false;
-		else if (!DoImageProcessing(pIM))
+		else if (!DoImageProcessing(pBuf))
 			Ok = false;
 
 		m_pOutputRingBuf->ReleaseWrite();
@@ -525,7 +529,7 @@ void CImageProcessingThread::Terminate()
 	}
 }
 
-void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<CImageMem> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam)
+void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_pInputRingBuf = pInputRingBuffer;

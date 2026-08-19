@@ -146,23 +146,19 @@ public:
 	}
 };
 
-class CImageMem
+
+struct PROCESSED_FRAME
 {
-public:
 	void    *pGuiData=nullptr;
-	uint8_t	*pBits=nullptr;
-	int      Wd=0, Ht=0, Planes=0, Span=0, Padding=0, Size=0;
-	CImageMem(){}
-	~CImageMem()
-	{
-		if(pBits) // temporary
-			delete[] pBits;
-	}
-	void Allocate()
-	{
-		if (Size>0 && !pBits) // temporary
-			pBits = new uint8_t[Size];
-	}
+	uint8_t	*pData=nullptr;
+	int      Wd=0, Ht=0;
+	int      Planes=0, Span=0, Padding=0;
+};
+
+enum IMAGEFORMAT
+{
+	IMGFMT_RGB24 = 0,
+	IMGFMT_GREY8,
 };
 
 #define CAMERA_READY_PARAMS	int Wd, int Ht, void *pParam
@@ -173,7 +169,7 @@ public:
 	CCameraThread(){}
 	~CCameraThread(){ Terminate(); }
 	// TO DO - caller needs to specify the required image format, eg, RGB 24bit, or greyscale 8bit.
-	void Start(const std::string& url, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam);
+	void Start(const std::string& url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam);
 	void Terminate();
 
 private:
@@ -183,6 +179,7 @@ private:
 	std::atomic<bool> m_StopRequested{false};
 	std::string       m_ErrorLog, m_CamURL;
 	void             *m_pCallbackParam;
+	IMAGEFORMAT       m_OutputFormat;
 
 	void Run();
 	bool WriteNextFrame(const CFrame& frame, CImageConverter& converter);
@@ -196,12 +193,12 @@ class CImageProcessingThread
 public:
 	CImageProcessingThread(){}
 	~CImageProcessingThread(){ Terminate(); }
-	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<CImageMem> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam);
+	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam);
 	void Terminate();
 
 private:
-	SPSCRingBuffer<CFrame>    *m_pInputRingBuf=nullptr;
-	SPSCRingBuffer<CImageMem> *m_pOutputRingBuf=nullptr;
+	SPSCRingBuffer<CFrame>          *m_pInputRingBuf=nullptr;
+	SPSCRingBuffer<PROCESSED_FRAME> *m_pOutputRingBuf=nullptr;
 
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
@@ -209,8 +206,8 @@ private:
 	void             *m_pCallbackParam;
 
 	void Run();
-	bool CopyFrame(CFrame *pSource, CImageMem *pDest);
-	bool DoImageProcessing(CImageMem *pImg);
+	bool CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest);
+	bool DoImageProcessing(PROCESSED_FRAME *pFrame);
 	bool WriteNextFrame(CFrame *pRgbFrame);
 	void (*m_FrameReadyCallback)(FRAME_READY_PARAMS) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
 };
@@ -218,8 +215,9 @@ private:
 
 // TO DO - 
 // 
-// inconsistant use of 'const'
-// using pointers in places where references would be 'better' practice.
+// @@@@@ inconsistant use of 'const' @@@@@ put it in member functions,  (WriteNextFrame for example)
+// 
+// I'm using pointers in places where references would be 'better' practice.
 //
 // Option to have the display on or off, if off then image processing should run in background.
 // Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.

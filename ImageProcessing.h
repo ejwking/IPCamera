@@ -4,4 +4,4 @@
 
 #include "Camera.h"
 
-extern bool Image_Processing(CImageMem *pImg);
+extern bool Image_Processing(PROCESSED_FRAME *pImg);
