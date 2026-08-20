@@ -51,7 +51,7 @@ private:
 };
 
 
-struct VideoInfo
+struct VIDEO_INFO
 {
 	std::string codecName;
 	int width = 0, height = 0;
@@ -63,18 +63,18 @@ struct VideoInfo
 class CCamera
 {
 public:
-	VideoInfo m_VideoInfo;
+	VIDEO_INFO m_VideoInfo;
 	CCamera();
 	~CCamera();
 	// Non-copyable
 	CCamera(const CCamera&) = delete;
 	CCamera& operator=(const CCamera&) = delete;
 
-	void GetVideoInfo();
 	bool Open(const std::string& url);
+	void Close();
+	void GetVideoInfo();
 	bool Grab();
 	const CFrame& CurrentFrame() const;
-	void Close();
 
 private:
 	// The PImpl Idiom (Pointer to IMPLementation) is a technique used for separating implementation from the interface. It minimizes header exposure.
@@ -149,10 +149,16 @@ public:
 
 struct PROCESSED_FRAME
 {
-	void    *pGuiData=nullptr;
+	void *pGuiData=nullptr;
+	// pData - this is the image buffer CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame) will write the image to. 
+	// But CImageProcessingThread is not responsible for this memory. It is up to the GUI side code to allocate pData however 
+	// it likes, ie, by using the win32 GDI bitmap functions, or just a plain malloc/new.
 	uint8_t	*pData=nullptr;
 	int      Wd=0, Ht=0;
 	int      Planes=0, Span=0, Padding=0;
+
+	// Data from image processing..
+	// std::vector or int something[xxx]
 };
 
 enum IMAGEFORMAT
@@ -180,9 +186,10 @@ private:
 	std::string       m_ErrorLog, m_CamURL;
 	void             *m_pCallbackParam;
 	IMAGEFORMAT       m_OutputFormat;
+	CImageConverter   m_Converter;
 
 	void Run();
-	bool WriteNextFrame(const CFrame& frame, CImageConverter& converter);
+	bool WriteNextFrame(const CFrame& frame);
 	void (*m_CameraReadyCallback)(CAMERA_READY_PARAMS) = nullptr;
 };
 
@@ -217,9 +224,10 @@ private:
 // 
 // @@@@@ inconsistant use of 'const' @@@@@ put it in member functions,  (WriteNextFrame for example)
 // 
-// I'm using pointers in places where references would be 'better' practice.
+// inconsistant use of references, I'm using pointers in places where references would be 'better' practice. Get used to using references where ever possible.
 //
 // Option to have the display on or off, if off then image processing should run in background.
+// 
 // Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.
 //
 // put plate finding module in (but not in github).

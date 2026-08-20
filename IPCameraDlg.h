@@ -4,32 +4,8 @@
 
 #pragma once
 
-#include "Camera.h"
-
-
-#define NUM_IMGPROC_FRAMES	3
-
-
-class CMyBitmap
-{
-public:
-	HBITMAP    m_hBitmap=nullptr;
-	BITMAPINFO m_BMI={0};
-	uint8_t	  *m_pData=nullptr;
-	CDC        m_MemDC;	// virtual drawing surface in memory.
-
-	CMyBitmap(){}
-	~CMyBitmap(){ Delete(); }
-	bool Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel);
-	void Delete();
-};
-
-
-class CIPCamera
-{
-	// put everything in here for controlling it, because 
-	// it shouldnt be mixed up in CIPCameraDlg ???
-};
+#include "IPCamera.h"
+#include "IPCameraInterface.h"
 
 
 // CIPCameraDlg dialog
@@ -39,15 +15,7 @@ class CIPCameraDlg : public CDialogEx
 public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
-	CFrame m_Frame[3];
-	SPSCRingBuffer<CFrame> m_CameraToProcessor;
-	CCameraThread m_CamThread;
-
-	CMyBitmap m_GuiData[NUM_IMGPROC_FRAMES];
-	PROCESSED_FRAME m_ProcessedFrame[NUM_IMGPROC_FRAMES];
-	SPSCRingBuffer<PROCESSED_FRAME> m_ProcessorToGui;
-	CImageProcessingThread m_ImgProcThread;
-
+	CIPCameraInterface m_CamInterface;
 	CString m_CameraURL;
 	CDC    *m_pDC=nullptr;
 

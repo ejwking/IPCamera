@@ -309,7 +309,6 @@ bool CCamera::Grab()
 	// make Grab() distinguish between:
 	// End of file (for local files).
 	// Temporary network errors (for RTSP), where it can retry instead of immediately giving up.
-	// (I'll leave it until I actually see a stream interruption).
 
 	while (av_read_frame(m_Impl->m_formatContext, m_Impl->m_packet) >= 0){
 		bool Ok = false;
@@ -365,14 +364,14 @@ When to Use std::mutex
 
 //####################################################################################################################################*/
 
-bool CCameraThread::WriteNextFrame(const CFrame& frame, CImageConverter& converter)
+bool CCameraThread::WriteNextFrame(const CFrame& frame)
 {
 	// This function is called in the producer thread after a new frame has been grabbed from the camera. 
 	// It converts the frame to RGB and writes it to the ring buffer.
 	bool Ok = true;
 	CFrame *pBuf = m_pRingBuf->AcquireWrite();
 	if (pBuf){
-		if (!converter.Convert(frame, *pBuf, true)){
+		if (!m_Converter.Convert(frame, *pBuf, true)){
 			m_ErrorLog += "\n convert to rgb failed \n";
 			Ok = false;
 		}
@@ -401,13 +400,12 @@ void CCameraThread::Run()
 	}
 	else {
 		bool Ok = true;
-		CImageConverter converter; // PROBABLY better to have this as class member variable
 		while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 
 			// Grab will naturally block waiting for the next frame.
 			if (Cam.Grab()){
 				const CFrame& frame = Cam.CurrentFrame();
-				if (!WriteNextFrame(frame, converter))
+				if (!WriteNextFrame(frame))
 					Ok = false;
 			}
 			else {
@@ -415,7 +413,7 @@ void CCameraThread::Run()
 				m_ErrorLog += "\n Grab failed \n";
 				Ok = false;
 				// alternatively, sleep for a while - std::this_thread::sleep_for(std::chrono::seconds(1));
-				// and attempt reconnect.
+				// and attempt reconnect. See comments in Cam.Grab()
 			}
 		}
 	}
@@ -490,7 +488,7 @@ bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 		// Frame dropped, ring buffer is full. The consumer (GUI thread) is slower than the producer (this image processing thread) at the moment.
 	}
 
-	// so hang on, this producer should not (always) be waiting for the consumer (GUI thread) to read a frame and therefore free up a slot in the ring buffer,
+	// so... this producer should not (always) be waiting for the consumer (GUI thread) to read a frame and therefore free up a slot in the ring buffer,
 	// because the GUI will not be displaying most the time and image processing will be a background task. So if the GUI display is off then we can call 
 	// AcquireRead/ReleaseRead for every AcquireWrite/ReleaseWrite so that the ring buffer is always has a free slot for the next frame from the camera thread.
 /*	if (RunningInBackground){
