@@ -5,19 +5,12 @@
 #include "framework.h"
 #include "IPCameraDlg.h"
 #include "afxdialogex.h"
-#include "utilities.h"
 
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
 
-
-// "C:\\Users\\edwar\\Desktop\\lesser used media\\tiktok vids\\Download.mp4"
-// "rtsp://username:password@192.168.0.31:554/stream1"
-
-#define IP_CAMERA_URL _T("")
-#define REG_SECTION	_T("IPCameraWnd")
 
 #define WM_APP_CAMERA_READY	(WM_APP + 1)
 #define WM_APP_FRAME_READY	(WM_APP + 2)
@@ -56,7 +49,7 @@ BOOL CIPCameraDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
 	// TODO: Add extra initialization here
-	m_CameraURL = AfxGetApp()->GetProfileString(REG_SECTION, _T("ip_camera_url"), IP_CAMERA_URL);
+	m_Setup.ReadConfigFile();
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
 
@@ -65,7 +58,6 @@ void CIPCameraDlg::OnDestroy()
 	CDialogEx::OnDestroy();
 	// TODO: Add your message handler code here
 	m_CamInterface.Shutdown();
-	AfxGetApp()->WriteProfileString(REG_SECTION, _T("ip_camera_url"), m_CameraURL);
 }
 
 // If you add a minimize button to your dialog, you will need the code below to draw the icon.
@@ -108,7 +100,7 @@ LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 	// will need WM_APP_FRAME_READY per camera, eg, WM_APP_FRAME_READY_CAM1, WM_APP_FRAME_READY_CAM2, ..
 
 	// WM_APP_FRAME_READY message handler.
-	m_CamInterface.FrameReadyMessageHandler(m_pDC);	// @@@@ also define rectangle position to draw this cameras frame in.
+	m_CamInterface.FrameReadyMessageHandler(m_pDC, 1.0f, 20, 20);
 	return 0;
 }
 
@@ -121,6 +113,9 @@ LRESULT CIPCameraDlg::OnCameraReady(WPARAM wParam, LPARAM lParam)
 
 void CIPCameraDlg::OnBnClickedBtnConnect()
 {
-	m_CamInterface.Start(Utf16ToUtf8(m_CameraURL.GetString()), m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
+	//for (int i=0; i<m_Setup.m_NumCams; i++){
+
+	if (m_Setup.m_Camera[0].Url != "")
+		m_CamInterface.Start(m_Setup.m_Camera[0].Url, m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
 }
 

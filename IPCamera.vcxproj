@@ -203,6 +203,7 @@
     <ClInclude Include="IPCamera.h" />
     <ClInclude Include="IPCameraDlg.h" />
     <ClInclude Include="IPCameraInterface.h" />
+    <ClInclude Include="ObjectDetection.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
@@ -214,6 +215,7 @@
     <ClCompile Include="IPCamera.cpp" />
     <ClCompile Include="IPCameraDlg.cpp" />
     <ClCompile Include="IPCameraInterface.cpp" />
+    <ClCompile Include="ObjectDetection.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

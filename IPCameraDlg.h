@@ -16,8 +16,8 @@ public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
 	CIPCameraInterface m_CamInterface;
-	CString m_CameraURL;
-	CDC    *m_pDC=nullptr;
+	CIPCameraAppSetup m_Setup;
+	CDC *m_pDC=nullptr;
 
 // Dialog Data
 #ifdef AFX_DESIGN_TIME

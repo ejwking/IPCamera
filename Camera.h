@@ -146,19 +146,28 @@ public:
 	}
 };
 
+struct XY_POINT
+{
+	int x, y;
+};
+
+struct IMG_PROC_OUTPUT
+{
+	XY_POINT Pt[4];
+	// ...
+};
 
 struct PROCESSED_FRAME
 {
-	void *pGuiData=nullptr;
-	// pData - this is the image buffer CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame) will write the image to. 
-	// But CImageProcessingThread is not responsible for this memory. It is up to the GUI side code to allocate pData however 
-	// it likes, ie, by using the win32 GDI bitmap functions, or just a plain malloc/new.
+	// pData - this is the image buffer CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame) will write to. 
+	// CImageProcessingThread is not responsible for this memory. It is up to the calling-thread/GUI code to allocate 
+	// it at start up, which it might do using the win32 GDI functions, or just simply malloc/new.
 	uint8_t	*pData=nullptr;
 	int      Wd=0, Ht=0;
 	int      Planes=0, Span=0, Padding=0;
-
 	// Data from image processing..
-	// std::vector or int something[xxx]
+	IMG_PROC_OUTPUT ImgProcOut;
+	void *pGuiData=nullptr;
 };
 
 enum IMAGEFORMAT
@@ -229,8 +238,7 @@ private:
 // Option to have the display on or off, if off then image processing should run in background.
 // 
 // Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.
-//
-// put plate finding module in (but not in github).
+
 
 
 
