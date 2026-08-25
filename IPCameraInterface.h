@@ -12,6 +12,8 @@
 // 
 #endif
 
+//typedef GUIMSG int;
+
 class CMyBitmap
 {
 public:
@@ -22,8 +24,18 @@ public:
 
 	CMyBitmap(){}
 	~CMyBitmap(){ Delete(); }
-	bool Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel);
+	bool Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel, bool TopDown);
 	void Delete();
+	bool IsCreated(){ return (m_hBitmap != nullptr); }
+};
+
+
+struct IPCAMERASETUP
+{
+	std::string Url;
+	HWND hWnd;
+	uint32_t CameraReadyMsg, FrameReadyMsg;
+	uint32_t MessageSubCode;
 };
 
 
@@ -31,15 +43,14 @@ public:
 class CIPCameraInterface
 {
 public:
-	bool Start(std::string CameraURL, HWND hWnd, UINT CameraReadyMsg, UINT FrameReadyMsg);
+	bool Start(const IPCAMERASETUP& Setup);//std::string CameraURL, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg);
 	void Shutdown();
 	bool CameraReadyMessageHandler(int Wd, int Ht, CDC *pScreen);
 	void FrameReadyMessageHandler(CDC *pScreen, float Scale, int X, int Y);	// pScreen, change name to pCDC ? ..because it might not yet be the screen.
 
 private:
 	bool m_Init=0;
-	HWND m_hWnd;
-	UINT m_CameraReadyMsg, m_FrameReadyMsg;
+	IPCAMERASETUP m_Setup;
 
 	// camera thread data..
 	CFrame                 m_Frame[RING_BUF_SLOTS];
@@ -57,38 +68,39 @@ private:
 };
 
 
-struct IPCAMERASETUP
+class CIPCameraManager
 {
-	std::string Url;
-	UINT CameraReadyMsg, FrameReadyMsg; // to do
-	int X, Y; // drawing position.
-	float Scale; // drawing scale.
-};
-
-class CIPCameraAppSetup
-{
-public:
-	IPCAMERASETUP m_Camera[6];
-	int m_NumCams=0;
+private:
+	CIPCameraInterface *m_pCams=nullptr;
+	std::vector<IPCAMERASETUP> m_Setup;
 	bool m_DisplayEnabled;
 
-	void ReadConfigFile()
-	{
-		CConfigFile cfg;
-		bool ok = cfg.load("C:\\EKING\\Projects\\C++\\IPCamera\\my notes\\config.txt");	// @@@@ hard coded for now.
-		if (!cfg.getErrors().empty())
-			for (auto& err : cfg.getErrors())
-				TRACE(_T("\n config.txt error - %s "), Utf8(err.c_str()));
+public:
+	// rather than posting all cameras FrameReadyMsg messages to the GUI thread, maybe there should be another thread to 
+	// to manage all cameras, and compile all the drawing from all camera to one drawing surface, then give this to the GUI.
+	// Because if there are lots of cameras the windows message loop/queue is gonna be servicing a high quantity of messages.
 
-		m_DisplayEnabled = cfg.getBool("display_enabled");
-		m_NumCams = 0;
-		int Max_Cams = num_entries(m_Camera);
-		for (int i=0; i<Max_Cams; i++){
-			std::string name = "camera_url_" + std::to_string(i+1);
-			m_Camera[i].Url = cfg.getString(name, "");
-			if (!m_Camera[i].Url.empty())
-				m_NumCams++;
-		}
+	bool InitialiseSetup(const std::string& ConfigPath, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg);
+	bool StartStreams();
+	void TerminateStreams(); // @@@@@@@@ fix in here
+
+	bool CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen){
+		// GUI thread message handler.
+		int CameraIndex = (int)wParam;
+		int Wd = LPARAM2_LO(lParam);
+		int Ht = LPARAM2_HI(lParam);
+		return m_pCams[CameraIndex].CameraReadyMessageHandler(Wd, Ht, pScreen);
+	}
+
+	void FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY){
+		// GUI thread message handler.
+		// 
+		// gui/caller should pass in current window size, then calculations here can adjaust the camera display to fit.
+
+		// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ THIS NEXT
+
+		int CameraIndex = (int)wParam;
+		m_pCams[CameraIndex].FrameReadyMessageHandler(pScreen, 1.0f, 20, 20);
 	}
 };
 

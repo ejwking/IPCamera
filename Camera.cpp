@@ -445,12 +445,12 @@ void CCameraThread::Terminate()
 bool CImageProcessingThread::CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest)
 {
 	if (pDest->pData){
-		if (pDest->Wd!=pSource->Width() || pDest->Ht!=pSource->Height() || pDest->Span!=pSource->LineSize()){
+		if (pDest->Wd!=pSource->Width() || pDest->Ht!=pSource->Height() || pDest->LineSize!=pSource->LineSize()){
 			m_ErrorLog += "\n Source and destination frame dimensions do not match, (camera resolution changed?) \n";
 			return false;
 		}
 		// Copy the RGB data from the frame into our (ring) buffer.
-		int Size = pDest->Span * pDest->Ht;
+		int Size = pDest->LineSize * pDest->Ht;
 		memcpy(pDest->pData, pSource->Data(), Size);
 		return true;
 	}

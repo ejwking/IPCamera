@@ -4,7 +4,7 @@
 #include "utilities.h"
 
 
-bool CMyBitmap::Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel)
+bool CMyBitmap::Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel, bool TopDown)
 {
 	if (m_hBitmap){
 		::AfxMessageBox(_T("error - CMyBitmap. Bitmap already created "));
@@ -13,8 +13,8 @@ bool CMyBitmap::Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel)
 		memset(&m_BMI.bmiHeader, 0, sizeof(m_BMI.bmiHeader));
 		m_BMI.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
 		m_BMI.bmiHeader.biWidth       = Wd;
-		m_BMI.bmiHeader.biHeight      = -Ht;		// HARD CODED (HACK??) - negative height to create a top-down DIB
-		m_BMI.bmiHeader.biPlanes      = 1;			// ???
+		m_BMI.bmiHeader.biHeight      = TopDown ? -Ht : Ht;	// negative height to create a top-down DIB.
+		m_BMI.bmiHeader.biPlanes      = 1;					// ???
 		m_BMI.bmiHeader.biBitCount    = BitsPerPixel;
 		m_BMI.bmiHeader.biCompression = BI_RGB;
 		void *pBitmapBits;
@@ -41,16 +41,95 @@ void CMyBitmap::Delete()
 
 // ############################################################################################################################################
 
-bool CIPCameraInterface::Start(std::string CameraURL, HWND hWnd, UINT CameraReadyMsg, UINT FrameReadyMsg)
+bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg)
+{
+	CConfigFile cfg;
+	if (!cfg.load(ConfigPath)){
+		if (!cfg.getErrors().empty())
+			for (auto& err : cfg.getErrors())
+				TRACE(_T("\n config.txt error - %s "), Utf8(err.c_str()));
+		return false;
+	}
+
+	// ~~~~~~~~~~~~~~~~~~~~~
+	// field : camera_url_XX
+	// 
+	// in config file the ip camera list will be indexed like this:
+	// camera_url_1 = 192.168.xxxx
+	// camera_url_2 = 192.168.xxxx
+	// camera_url_3 = 192.168.xxxx
+	// But we dont care what the indexes in this list are, just as long as each one is different, and between 0 and 99.
+	m_Setup.clear();
+	for (int i=0; i<100; i++){
+		std::string name = "camera_url_" + std::to_string(i);
+		std::string url = cfg.getString(name, "");
+		if (!url.empty()){
+			int index = (int)m_Setup.size();
+		//	if (index < MaxCameras){
+				IPCAMERASETUP S;
+				S.Url = url;
+				S.CameraReadyMsg = CameraReadyMsg;
+				S.FrameReadyMsg  = FrameReadyMsg;
+				S.MessageSubCode = index;
+				S.hWnd           = hWnd;
+				m_Setup.push_back(S);
+		//	}
+		}
+	}
+
+	// ~~~~~~~~~~~~~~~~~~~~~
+	// field : display_enabled
+	m_DisplayEnabled = cfg.getBool("display_enabled");
+
+	return (m_Setup.size() > 0);
+}
+
+bool CIPCameraManager::StartStreams()
+{
+	if (!m_pCams){
+		int Size = (int)m_Setup.size();
+		if (Size > 0){
+			m_pCams = new CIPCameraInterface[Size];
+			if (m_pCams){
+				for (int i=0; i<Size; i++)
+					m_pCams[i].Start(m_Setup[i]);
+				return true;
+			}
+			::AfxMessageBox(_T("StartAllCameras - memory allocation failed"));
+		}
+	}
+	return false;
+}
+
+void CIPCameraManager::TerminateStreams()
+{
+	if (m_pCams){
+
+		int Num = (int)m_Setup.size();
+
+		// why cant i do num_entries(m_pCams) here?
+		// because it would be safer, better form
+
+		for (int i=0; i<Num; i++)
+			m_pCams[i].Shutdown();
+
+		// For new (single object), use delete
+		// For new[] (array), use delete[]
+		delete[] m_pCams;
+		m_pCams = nullptr;
+	}
+}
+
+// ############################################################################################################################################
+
+bool CIPCameraInterface::Start(const IPCAMERASETUP& Setup)
 {
 	if (m_Init == 0){
 		m_Init = 1;
-		m_hWnd = hWnd;
-		m_CameraReadyMsg = CameraReadyMsg;
-		m_FrameReadyMsg = FrameReadyMsg;
+		m_Setup = Setup; // make copy of.
 		m_CameraToProcessor.AssignBuffer(m_Frame, num_entries(m_Frame));
 		// to do - specify required image format (RGB 24, greyscale, ect).
-		m_CamThread.Start(CameraURL, IMAGEFORMAT::IMGFMT_RGB24, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
+		m_CamThread.Start(m_Setup.Url, IMAGEFORMAT::IMGFMT_RGB24, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
 	}
 	return false;
 }
@@ -63,7 +142,7 @@ void CIPCameraInterface::Shutdown()
 
 void CIPCameraInterface::Static_CameraReadyCallback(int Wd, int Ht, void *pParam)
 {
-	// This is called in the camera thread, not in the GUI thread. 
+	// Called in the camera thread and will post a message to the GUI thread. 
 	if (pParam){
 		CIPCameraInterface *ipc = (CIPCameraInterface*)pParam;
 		// SendMessage(...) - blocks execution until the receiving window (GUI thread) processes the message.
@@ -72,7 +151,8 @@ void CIPCameraInterface::Static_CameraReadyCallback(int Wd, int Ht, void *pParam
 		// Next, m_CamThread.Terminate() blocks the GUI thread until the camera thread terminates.
 		// But the camera thread cant terminate because SendMessage won't return until WM_APP_CAMERA_READY msg is processed.
 		// Conclusion - dont use SendMessage.
-		PostMessage(ipc->m_hWnd, ipc->m_CameraReadyMsg, (WPARAM)Wd, (LPARAM)Ht);
+		LPARAM lp = MAKE_LPARAM2(Wd, Ht);
+		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.CameraReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, lp);
 	}
 }
 
@@ -86,41 +166,43 @@ void CIPCameraInterface::Static_CameraReadyCallback(int Wd, int Ht, void *pParam
 
 void CIPCameraInterface::Static_FrameReadyCallback(int Code, void *pParam)
 {
-	// This is called in the image processing thread, not in the GUI thread. 
+	// Called in the image processing thread and will post a message to the GUI thread. 
 	if (pParam){
 		CIPCameraInterface *ipc = (CIPCameraInterface*)pParam;
 		// Post message - non-blocking will put in receiving window (GUI thread) message queue.
-		PostMessage(ipc->m_hWnd, ipc->m_FrameReadyMsg, 0, 0);
+		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.FrameReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, 0);
 	}
 }
 
 bool CIPCameraInterface::CameraReadyMessageHandler(int Wd, int Ht, CDC *pScreen)
 {
-	int LineSize = Wd * 3;
-	// Image format options (eg, RGB 24, greyscale, ect) should be specified when starting the img proc thread.
-	// Currently img proc thread just outputs at RGB24, hence above : LineSize = Wd * 3;
-
+	// GUI thread message handler.
 	for (int i=0; i<num_entries(m_ProcessedFrame); i++){
 		PROCESSED_FRAME &PF = m_ProcessedFrame[i];
-		PF.Wd      = Wd;
-		PF.Ht      = Ht;
-		PF.Span    = LineSize;
-		PF.Planes  = PF.Span / PF.Wd;
-		PF.Padding = PF.Span - (PF.Wd * PF.Planes);
+
+		// HARD CODED
+		// Desired image format (eg, RGB 24, greyscale, ect) should be specified at startup, and passed to img proc thread.
+		// Currently img proc thread just outputs at RGB24, hence hard coded below - LineSize = Wd * 3;
+		PF.Wd       = Wd;
+		PF.Ht       = Ht;
+		PF.LineSize = Wd * 3;
+		PF.Planes   = PF.LineSize / PF.Wd;
+		PF.Padding  = PF.LineSize - (PF.Wd * PF.Planes);
 
 		if (i < num_entries(m_GuiData)){
-			if (m_GuiData[i].Create(pScreen, Wd, Ht, 24)){
+			if (m_GuiData[i].Create(pScreen, Wd, Ht, 24, true)){
 				PF.pGuiData = (void*)&m_GuiData[i];
 				PF.pData    = m_GuiData[i].m_pData;
 			}
 		}
 		else {
-			// Rather than declaring m_GuiData (with index count matching m_ProcessedFrame), I could instead allocate memory for 
-			// PF.pGuiData in this loop. The disadvantge of doing that is the added complication to the cleanup code freeing the memory.
+			// m_GuiData and m_ProcessedFrame are defined separately, but have the same array size as each m_ProcessedFrame element contains a m_GuiData. I could 
+			// instead allocate memory for PF.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
 			::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
 			return  false;
 		}
 	}
+	// Now the camera has started we can start the image processing thread.
 	m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
 	m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this);
 	return true;
@@ -128,6 +210,7 @@ bool CIPCameraInterface::CameraReadyMessageHandler(int Wd, int Ht, CDC *pScreen)
 
 void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, float Scale, int X, int Y)
 {
+	// GUI thread message handler.
 	PROCESSED_FRAME *pBuf = m_ProcessorToGui.AcquireRead();
 	if (pBuf){
 		if (pScreen){
@@ -139,14 +222,16 @@ void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, float Scale, int
 			}*/
 			CMyBitmap *pMB = (CMyBitmap*)pBuf->pGuiData;
 			if (pMB){
-				DrawImgProcOutput(&pMB->m_MemDC, &pBuf->ImgProcOut);
-				if (Scale == 1.0f)
-					pScreen->BitBlt(X, Y, pBuf->Wd, pBuf->Ht, &pMB->m_MemDC, 0, 0, SRCCOPY);
-				else {
-					int Wd = (int)((float)pBuf->Wd * Scale);
-					int Ht = (int)((float)pBuf->Ht * Scale);
-					pScreen->SetStretchBltMode(HALFTONE);
-					pScreen->StretchBlt(X, Y, Wd, Ht, &pMB->m_MemDC, 0, 0, pBuf->Wd, pBuf->Ht, SRCCOPY);
+				if (pMB->IsCreated()){
+					DrawImgProcOutput(&pMB->m_MemDC, &pBuf->ImgProcOut);
+					if (Scale == 1.0f)
+						pScreen->BitBlt(X, Y, pBuf->Wd, pBuf->Ht, &pMB->m_MemDC, 0, 0, SRCCOPY);
+					else {
+						int Wd = (int)((float)pBuf->Wd * Scale);
+						int Ht = (int)((float)pBuf->Ht * Scale);
+						pScreen->SetStretchBltMode(HALFTONE);
+						pScreen->StretchBlt(X, Y, Wd, Ht, &pMB->m_MemDC, 0, 0, pBuf->Wd, pBuf->Ht, SRCCOPY);
+					}
 				}
 			}
 		}

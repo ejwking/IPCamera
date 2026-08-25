@@ -11,7 +11,7 @@ bool Image_Processing(PROCESSED_FRAME *pImg)
 	// write results to a log file or database.
 
 	for(int i=0; i<pImg->Ht; i++){
-		uint8_t *pLine = pImg->pData + (i * pImg->Span);
+		uint8_t *pLine = pImg->pData + (i * pImg->LineSize);
 		for(int j=0; j<pImg->Wd; j++){
 			uint8_t *r = &pLine[j*pImg->Planes + 0];
 			uint8_t *g = &pLine[j*pImg->Planes + 1];

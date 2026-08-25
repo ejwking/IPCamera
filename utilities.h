@@ -7,6 +7,11 @@
 
 #define num_entries(name) (sizeof(name)/sizeof((name)[0]))
 
+#define MAKE_LPARAM2(lo, hi)   ((LPARAM)(((WORD)(lo)) | (((DWORD)(WORD)(hi)) << 16)))
+#define LPARAM2_LO(lp)   ((int)(WORD)((lp) & 0xFFFF))
+#define LPARAM2_HI(lp)   ((int)(WORD)(((lp) >> 16) & 0xFFFF))
+
+
 extern CString Utf8(const std::string& s);
 extern std::string Utf16ToUtf8(const std::wstring& utf16Str);
 

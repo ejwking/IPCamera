@@ -164,7 +164,7 @@ struct PROCESSED_FRAME
 	// it at start up, which it might do using the win32 GDI functions, or just simply malloc/new.
 	uint8_t	*pData=nullptr;
 	int      Wd=0, Ht=0;
-	int      Planes=0, Span=0, Padding=0;
+	int      Planes=0, LineSize=0, Padding=0;
 	// Data from image processing..
 	IMG_PROC_OUTPUT ImgProcOut;
 	void *pGuiData=nullptr;

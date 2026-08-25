@@ -15,8 +15,7 @@ class CIPCameraDlg : public CDialogEx
 public:
 	CIPCameraDlg(CWnd* pParent = nullptr);	// standard constructor
 
-	CIPCameraInterface m_CamInterface;
-	CIPCameraAppSetup m_Setup;
+	CIPCameraManager m_CamManager;
 	CDC *m_pDC=nullptr;
 
 // Dialog Data

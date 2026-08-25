@@ -27,6 +27,7 @@ void CIPCameraDlg::DoDataExchange(CDataExchange* pDX)
 	CDialogEx::DoDataExchange(pDX);
 }
 
+
 BEGIN_MESSAGE_MAP(CIPCameraDlg, CDialogEx)
 	ON_WM_PAINT()
 	ON_WM_QUERYDRAGICON()
@@ -49,7 +50,8 @@ BOOL CIPCameraDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
 	// TODO: Add extra initialization here
-	m_Setup.ReadConfigFile();
+	// ...
+
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
 
@@ -57,7 +59,8 @@ void CIPCameraDlg::OnDestroy()
 {
 	CDialogEx::OnDestroy();
 	// TODO: Add your message handler code here
-	m_CamInterface.Shutdown();
+
+	m_CamManager.TerminateStreams();
 }
 
 // If you add a minimize button to your dialog, you will need the code below to draw the icon.
@@ -97,25 +100,38 @@ HCURSOR CIPCameraDlg::OnQueryDragIcon()
 
 LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 {
-	// will need WM_APP_FRAME_READY per camera, eg, WM_APP_FRAME_READY_CAM1, WM_APP_FRAME_READY_CAM2, ..
-
 	// WM_APP_FRAME_READY message handler.
-	m_CamInterface.FrameReadyMessageHandler(m_pDC, 1.0f, 20, 20);
+	CRect rect;
+	GetClientRect(&rect);
+	m_CamManager.FrameReadyMessageHandler(wParam, lParam, m_pDC, rect.Width(), rect.Height());
 	return 0;
 }
 
 LRESULT CIPCameraDlg::OnCameraReady(WPARAM wParam, LPARAM lParam)
 {
 	// WM_APP_CAMERA_READY message handler.
-	m_CamInterface.CameraReadyMessageHandler((int)wParam, (int)lParam, m_pDC);
+	m_CamManager.CameraReadyMessageHandler(wParam, lParam, m_pDC);
 	return 0;
 }
 
+/*
+#define WM_APP_CAMERA_READY_LAST	(WM_APP_CAMERA_READY + (MAX_CAMERAS - 1))
+#define WM_APP_FRAME_READY			(WM_APP_CAMERA_READY + MAX_CAMERAS)
+#define WM_APP_FRAME_READY_LAST		(WM_APP_FRAME_READY  + (MAX_CAMERAS - 1))
+ON_MESSAGE_RANGE(WM_APP_CAMERA_READY, WM_APP_CAMERA_READY_LAST, &CIPCameraDlg::OnCameraReadyRange)
+ON_MESSAGE_RANGE(WM_APP_FRAME_READY,  WM_APP_FRAME_READY_LAST,  &CIPCameraDlg::OnFrameReadyRange)
+LRESULT CIPCameraDlg::OnCameraReadyRange(WPARAM wParam, LPARAM lParam)
+{
+	return LRESULT();
+}
+LRESULT CIPCameraDlg::OnFrameReadyRange(WPARAM wParam, LPARAM lParam)
+{
+	return LRESULT();
+}*/
+
 void CIPCameraDlg::OnBnClickedBtnConnect()
 {
-	//for (int i=0; i<m_Setup.m_NumCams; i++){
-
-	if (m_Setup.m_Camera[0].Url != "")
-		m_CamInterface.Start(m_Setup.m_Camera[0].Url, m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
+	m_CamManager.InitialiseSetup("C:\\EKING\\Projects\\C++\\IPCamera\\my notes\\config.txt", m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
+	m_CamManager.StartStreams();
 }
 
