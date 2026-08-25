@@ -174,9 +174,10 @@ enum IMAGEFORMAT
 {
 	IMGFMT_RGB24 = 0,
 	IMGFMT_GREY8,
+	// ...
 };
 
-#define CAMERA_READY_PARAMS	int Wd, int Ht, void *pParam
+#define CAMERA_READY_CALLBACK_PARAMS	VIDEO_INFO &VI, void *pParam
 
 class CCameraThread
 {
@@ -184,7 +185,7 @@ public:
 	CCameraThread(){}
 	~CCameraThread(){ Terminate(); }
 	// TO DO - caller needs to specify the required image format, eg, RGB 24bit, or greyscale 8bit.
-	void Start(const std::string& url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam);
+	void Start(const std::string& url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam);
 	void Terminate();
 
 private:
@@ -199,17 +200,17 @@ private:
 
 	void Run();
 	bool WriteNextFrame(const CFrame& frame);
-	void (*m_CameraReadyCallback)(CAMERA_READY_PARAMS) = nullptr;
+	void (*m_CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS) = nullptr;
 };
 
-#define FRAME_READY_PARAMS int Code, void *pParam
+#define FRAME_READY_CALLBACK_PARAMS int Code, void *pParam
 
 class CImageProcessingThread
 {
 public:
 	CImageProcessingThread(){}
 	~CImageProcessingThread(){ Terminate(); }
-	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam);
+	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam);
 	void Terminate();
 
 private:
@@ -225,7 +226,7 @@ private:
 	bool CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest);
 	bool DoImageProcessing(PROCESSED_FRAME *pFrame);
 	bool WriteNextFrame(CFrame *pRgbFrame);
-	void (*m_FrameReadyCallback)(FRAME_READY_PARAMS) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
+	void (*m_FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
 };
 
 
@@ -233,10 +234,10 @@ private:
 // 
 // @@@@@ inconsistant use of 'const' @@@@@ put it in member functions,  (WriteNextFrame for example)
 // 
-// inconsistant use of references, I'm using pointers in places where references would be 'better' practice. Get used to using references where ever possible.
+// inconsistant use of references, I'm using pointers in places where references would be better practice.
 //
 // Option to have the display on or off, if off then image processing should run in background.
-// 
+//
 // Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.
 
 

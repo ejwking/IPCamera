@@ -39,18 +39,20 @@ struct IPCAMERASETUP
 };
 
 
-#define RING_BUF_SLOTS 3
+#define RING_BUF_SLOTS 3 // ..or 4? 3 seems fine.
+
 class CIPCameraInterface
 {
 public:
-	bool Start(const IPCAMERASETUP& Setup);//std::string CameraURL, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg);
+	bool Start(const IPCAMERASETUP& Setup);
 	void Shutdown();
-	bool CameraReadyMessageHandler(int Wd, int Ht, CDC *pScreen);
+	bool CameraReadyMessageHandler(CDC *pScreen);
 	void FrameReadyMessageHandler(CDC *pScreen, float Scale, int X, int Y);	// pScreen, change name to pCDC ? ..because it might not yet be the screen.
 
 private:
-	bool m_Init=0;
+	bool          m_Init=0;
 	IPCAMERASETUP m_Setup;
+	VIDEO_INFO    m_VideoInfo;	// This is accessed in the camera thread (once, for write) and gui thread (for read), it is not protected because access is asynchronous.
 
 	// camera thread data..
 	CFrame                 m_Frame[RING_BUF_SLOTS];
@@ -62,46 +64,35 @@ private:
 	SPSCRingBuffer<PROCESSED_FRAME> m_ProcessorToGui;
 	CImageProcessingThread          m_ImgProcThread;
 
-	static void Static_CameraReadyCallback(int Wd, int Ht, void *pParam);
-	static void Static_FrameReadyCallback(int Code, void *pParam);
+	static void Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS);
+	static void Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS);
 	void DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO);
 };
 
 
+// to do - put CIPCameraManager in a separate .h .cpp ?
+#define SAFE_MAX_CAMERAS 16
+
 class CIPCameraManager
 {
 private:
+	// to do  
+	// std::vector<std::string> m_Errors;
+	// , also change my other error handling to a std::vector<std::string>
+
 	CIPCameraInterface *m_pCams=nullptr;
-	std::vector<IPCAMERASETUP> m_Setup;
+	std::vector<IPCAMERASETUP> m_CamSetup;
 	bool m_DisplayEnabled;
 
 public:
-	// rather than posting all cameras FrameReadyMsg messages to the GUI thread, maybe there should be another thread to 
-	// to manage all cameras, and compile all the drawing from all camera to one drawing surface, then give this to the GUI.
-	// Because if there are lots of cameras the windows message loop/queue is gonna be servicing a high quantity of messages.
+	CIPCameraManager();
+	~CIPCameraManager();
 
 	bool InitialiseSetup(const std::string& ConfigPath, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg);
 	bool StartStreams();
-	void TerminateStreams(); // @@@@@@@@ fix in here
-
-	bool CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen){
-		// GUI thread message handler.
-		int CameraIndex = (int)wParam;
-		int Wd = LPARAM2_LO(lParam);
-		int Ht = LPARAM2_HI(lParam);
-		return m_pCams[CameraIndex].CameraReadyMessageHandler(Wd, Ht, pScreen);
-	}
-
-	void FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY){
-		// GUI thread message handler.
-		// 
-		// gui/caller should pass in current window size, then calculations here can adjaust the camera display to fit.
-
-		// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ THIS NEXT
-
-		int CameraIndex = (int)wParam;
-		m_pCams[CameraIndex].FrameReadyMessageHandler(pScreen, 1.0f, 20, 20);
-	}
+	void TerminateStreams();
+	bool CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen);
+	void FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY);
 };
 
 
@@ -115,10 +106,6 @@ image processing
 
 linux, and/or Web UI.
 
-Idea - have no GUI controls, instead have a config.txt which is edited by hand. This way all controls gonna work on Linux without replicating GUI code.
-  Also dont use windows registry - cam IP's in config.txt.
-
-Multiple cameras and multiple displays
 DVR functionality, my own Ip cam recording on pc/Linux 
 */
 

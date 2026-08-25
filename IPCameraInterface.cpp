@@ -43,6 +43,11 @@ void CMyBitmap::Delete()
 
 bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg)
 {
+	if (!m_CamSetup.empty()){
+		// to do - add report error
+		return false;
+	}
+
 	CConfigFile cfg;
 	if (!cfg.load(ConfigPath)){
 		if (!cfg.getErrors().empty())
@@ -59,40 +64,45 @@ bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd,
 	// camera_url_2 = 192.168.xxxx
 	// camera_url_3 = 192.168.xxxx
 	// But we dont care what the indexes in this list are, just as long as each one is different, and between 0 and 99.
-	m_Setup.clear();
+	m_CamSetup.clear();
 	for (int i=0; i<100; i++){
 		std::string name = "camera_url_" + std::to_string(i);
 		std::string url = cfg.getString(name, "");
 		if (!url.empty()){
-			int index = (int)m_Setup.size();
-		//	if (index < MaxCameras){
+			int index = (int)m_CamSetup.size();
+			if (index >= SAFE_MAX_CAMERAS){
+				// to do - add report error
+			}
+			else {
 				IPCAMERASETUP S;
-				S.Url = url;
+				S.Url            = url;
 				S.CameraReadyMsg = CameraReadyMsg;
 				S.FrameReadyMsg  = FrameReadyMsg;
 				S.MessageSubCode = index;
 				S.hWnd           = hWnd;
-				m_Setup.push_back(S);
-		//	}
+				m_CamSetup.push_back(S);
+			}
 		}
 	}
-
 	// ~~~~~~~~~~~~~~~~~~~~~
 	// field : display_enabled
 	m_DisplayEnabled = cfg.getBool("display_enabled");
 
-	return (m_Setup.size() > 0);
+	return (m_CamSetup.size() > 0);
 }
 
 bool CIPCameraManager::StartStreams()
 {
-	if (!m_pCams){
-		int Size = (int)m_Setup.size();
-		if (Size > 0){
-			m_pCams = new CIPCameraInterface[Size];
+	if (m_pCams){
+		// error already started, must be terminated first
+	}
+	else {
+		int Count = (int)m_CamSetup.size();
+		if (Count > 0){
+			m_pCams = new CIPCameraInterface[Count];
 			if (m_pCams){
-				for (int i=0; i<Size; i++)
-					m_pCams[i].Start(m_Setup[i]);
+				for (int i=0; i<Count; i++)
+					m_pCams[i].Start(m_CamSetup[i]);
 				return true;
 			}
 			::AfxMessageBox(_T("StartAllCameras - memory allocation failed"));
@@ -103,16 +113,11 @@ bool CIPCameraManager::StartStreams()
 
 void CIPCameraManager::TerminateStreams()
 {
+	int Count = (int)m_CamSetup.size();
+	m_CamSetup.clear();
 	if (m_pCams){
-
-		int Num = (int)m_Setup.size();
-
-		// why cant i do num_entries(m_pCams) here?
-		// because it would be safer, better form
-
-		for (int i=0; i<Num; i++)
+		for (int i=0; i<Count; i++)
 			m_pCams[i].Shutdown();
-
 		// For new (single object), use delete
 		// For new[] (array), use delete[]
 		delete[] m_pCams;
@@ -120,10 +125,47 @@ void CIPCameraManager::TerminateStreams()
 	}
 }
 
+bool CIPCameraManager::CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen)
+{
+	// GUI thread message handler.
+	int CameraIndex = (int)wParam;
+	return m_pCams[CameraIndex].CameraReadyMessageHandler(pScreen);
+}
+
+void CIPCameraManager::FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY)
+{
+	// GUI thread message handler.
+	int NumCams = m_CamSetup.size();
+	int CamIdx  = (int)wParam;
+	INT Code    = (int)lParam; // unused.
+	CIPCameraInterface *pCams = &m_pCams[CamIdx];
+
+	// pCams->m_VideoInfo also need to know the other cameras m_VideoInfo (W and H)/ so we can calculate different 
+	// size display rects? ...unless no matter the video dimensions we fit every video display into the same size rect
+	// so window is divided up into equal size rects, yes 
+
+	int X = (WindowCX * CamIdx) / NumCams;		// temp - quick and rough
+	float Scale = (NumCams > 1) ? 0.3f : 1.0f;	// temp - quick and rough
+
+	// below need to provide the rect position the video must be fit into.
+	pCams->FrameReadyMessageHandler(pScreen, Scale, X, 20);
+}
+
+CIPCameraManager::CIPCameraManager()
+{
+}
+
+CIPCameraManager::~CIPCameraManager()
+{
+	TerminateStreams();
+}
+
+// ############################################################################################################################################
 // ############################################################################################################################################
 
 bool CIPCameraInterface::Start(const IPCAMERASETUP& Setup)
 {
+	// called in the GUI thread.
 	if (m_Init == 0){
 		m_Init = 1;
 		m_Setup = Setup; // make copy of.
@@ -138,9 +180,10 @@ void CIPCameraInterface::Shutdown()
 {
 	m_CamThread.Terminate();
 	m_ImgProcThread.Terminate();
+	m_Init = 0;
 }
 
-void CIPCameraInterface::Static_CameraReadyCallback(int Wd, int Ht, void *pParam)
+void CIPCameraInterface::Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS)
 {
 	// Called in the camera thread and will post a message to the GUI thread. 
 	if (pParam){
@@ -151,8 +194,9 @@ void CIPCameraInterface::Static_CameraReadyCallback(int Wd, int Ht, void *pParam
 		// Next, m_CamThread.Terminate() blocks the GUI thread until the camera thread terminates.
 		// But the camera thread cant terminate because SendMessage won't return until WM_APP_CAMERA_READY msg is processed.
 		// Conclusion - dont use SendMessage.
-		LPARAM lp = MAKE_LPARAM2(Wd, Ht);
-		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.CameraReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, lp);
+		
+		ipc->m_VideoInfo = VI;
+		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.CameraReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, 0);
 	}
 }
 
@@ -164,17 +208,17 @@ void CIPCameraInterface::Static_CameraReadyCallback(int Wd, int Ht, void *pParam
 // Although this is a debug/breakpoint scenario, could this scenario occur in normal running if the computer became bogged down?
 // ..maybe put in some safety code, just incase.
 
-void CIPCameraInterface::Static_FrameReadyCallback(int Code, void *pParam)
+void CIPCameraInterface::Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS)
 {
 	// Called in the image processing thread and will post a message to the GUI thread. 
 	if (pParam){
 		CIPCameraInterface *ipc = (CIPCameraInterface*)pParam;
 		// Post message - non-blocking will put in receiving window (GUI thread) message queue.
-		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.FrameReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, 0);
+		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.FrameReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, (LPARAM)Code);
 	}
 }
 
-bool CIPCameraInterface::CameraReadyMessageHandler(int Wd, int Ht, CDC *pScreen)
+bool CIPCameraInterface::CameraReadyMessageHandler(CDC *pScreen)
 {
 	// GUI thread message handler.
 	for (int i=0; i<num_entries(m_ProcessedFrame); i++){
@@ -183,14 +227,14 @@ bool CIPCameraInterface::CameraReadyMessageHandler(int Wd, int Ht, CDC *pScreen)
 		// HARD CODED
 		// Desired image format (eg, RGB 24, greyscale, ect) should be specified at startup, and passed to img proc thread.
 		// Currently img proc thread just outputs at RGB24, hence hard coded below - LineSize = Wd * 3;
-		PF.Wd       = Wd;
-		PF.Ht       = Ht;
-		PF.LineSize = Wd * 3;
+		PF.Wd       = m_VideoInfo.width;
+		PF.Ht       = m_VideoInfo.height;
+		PF.LineSize = PF.Wd * 3;
 		PF.Planes   = PF.LineSize / PF.Wd;
 		PF.Padding  = PF.LineSize - (PF.Wd * PF.Planes);
 
 		if (i < num_entries(m_GuiData)){
-			if (m_GuiData[i].Create(pScreen, Wd, Ht, 24, true)){
+			if (m_GuiData[i].Create(pScreen, PF.Wd, PF.Ht, 24, true)){
 				PF.pGuiData = (void*)&m_GuiData[i];
 				PF.pData    = m_GuiData[i].m_pData;
 			}

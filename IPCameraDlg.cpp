@@ -16,8 +16,7 @@
 #define WM_APP_FRAME_READY	(WM_APP + 2)
 
 
-CIPCameraDlg::CIPCameraDlg(CWnd* pParent /*=nullptr*/)
-	: CDialogEx(IDD_IPCAMERA_DIALOG, pParent)
+CIPCameraDlg::CIPCameraDlg(CWnd* pParent /*=nullptr*/) : CDialogEx(IDD_IPCAMERA_DIALOG, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 }
@@ -51,7 +50,6 @@ BOOL CIPCameraDlg::OnInitDialog()
 
 	// TODO: Add extra initialization here
 	// ...
-
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
 
@@ -59,7 +57,6 @@ void CIPCameraDlg::OnDestroy()
 {
 	CDialogEx::OnDestroy();
 	// TODO: Add your message handler code here
-
 	m_CamManager.TerminateStreams();
 }
 
@@ -114,24 +111,19 @@ LRESULT CIPCameraDlg::OnCameraReady(WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
-/*
-#define WM_APP_CAMERA_READY_LAST	(WM_APP_CAMERA_READY + (MAX_CAMERAS - 1))
-#define WM_APP_FRAME_READY			(WM_APP_CAMERA_READY + MAX_CAMERAS)
-#define WM_APP_FRAME_READY_LAST		(WM_APP_FRAME_READY  + (MAX_CAMERAS - 1))
-ON_MESSAGE_RANGE(WM_APP_CAMERA_READY, WM_APP_CAMERA_READY_LAST, &CIPCameraDlg::OnCameraReadyRange)
-ON_MESSAGE_RANGE(WM_APP_FRAME_READY,  WM_APP_FRAME_READY_LAST,  &CIPCameraDlg::OnFrameReadyRange)
-LRESULT CIPCameraDlg::OnCameraReadyRange(WPARAM wParam, LPARAM lParam)
-{
-	return LRESULT();
-}
-LRESULT CIPCameraDlg::OnFrameReadyRange(WPARAM wParam, LPARAM lParam)
-{
-	return LRESULT();
-}*/
-
 void CIPCameraDlg::OnBnClickedBtnConnect()
 {
 	m_CamManager.InitialiseSetup("C:\\EKING\\Projects\\C++\\IPCamera\\my notes\\config.txt", m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
 	m_CamManager.StartStreams();
+
+	// to do,
+	// a disconnect button so i can connect/disconnect in the window.
+
+	//
+	// Proper error handling, 
+	// remove TRACE and MessageBox
+	//
+	// warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+	// ........unusually from std::vector Size().
 }
 

@@ -393,7 +393,7 @@ void CCameraThread::Run()
 	}
 	// Open succeeded, now we can grab frames. Some initialisation first.
 	if (m_CameraReadyCallback)
-		m_CameraReadyCallback(Cam.m_VideoInfo.width, Cam.m_VideoInfo.height, m_pCallbackParam);
+		m_CameraReadyCallback(Cam.m_VideoInfo, m_pCallbackParam);
 
 	if (!m_pRingBuf->InitRing()){
 		m_ErrorLog += "\n Ring buffer InitRing()==false \n";
@@ -419,7 +419,7 @@ void CCameraThread::Run()
 	}
 }
 
-void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_PARAMS), void *pCallbackParam)
+void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_CamURL = url;
@@ -527,7 +527,7 @@ void CImageProcessingThread::Terminate()
 	}
 }
 
-void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_PARAMS), void *pCallbackParam)
+void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_pInputRingBuf = pInputRingBuffer;
