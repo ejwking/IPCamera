@@ -44,6 +44,8 @@ struct IPCAMERASETUP
 class CIPCameraInterface
 {
 public:
+	VIDEO_INFO m_VideoInfo;	// This is accessed once in the camera thread (for write) and later in the gui thread (for read), it is not protected because access is synchronous.
+
 	bool Start(const IPCAMERASETUP& Setup);
 	void Shutdown();
 	bool CameraReadyMessageHandler(CDC *pScreen);
@@ -52,7 +54,6 @@ public:
 private:
 	bool          m_Init=0;
 	IPCAMERASETUP m_Setup;
-	VIDEO_INFO    m_VideoInfo;	// This is accessed in the camera thread (once, for write) and gui thread (for read), it is not protected because access is asynchronous.
 
 	// camera thread data..
 	CFrame                 m_Frame[RING_BUF_SLOTS];

@@ -34,6 +34,7 @@ BEGIN_MESSAGE_MAP(CIPCameraDlg, CDialogEx)
 	ON_MESSAGE(WM_APP_CAMERA_READY, &CIPCameraDlg::OnCameraReady)
 	ON_MESSAGE(WM_APP_FRAME_READY, &CIPCameraDlg::OnFrameReady)
 	ON_BN_CLICKED(IDC_BTN_CONNECT, &CIPCameraDlg::OnBnClickedBtnConnect)
+	ON_WM_SIZE()
 END_MESSAGE_MAP()
 
 
@@ -127,3 +128,10 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 	// ........unusually from std::vector Size().
 }
 
+
+void CIPCameraDlg::OnSize(UINT nType, int cx, int cy)
+{
+	CDialogEx::OnSize(nType,cx,cy);
+	// TODO: Add your message handler code here
+	Invalidate();
+}

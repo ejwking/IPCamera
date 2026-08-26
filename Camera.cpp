@@ -214,8 +214,7 @@ bool CCamera::Impl::Open(const std::string& url)
 		av_dict_set(&options, "rtsp_transport", "tcp", 0);
 		// If the camera is unplugged, I don't want Open() to hang for a long time. (5,000,000 microseconds = 5 seconds).
 		// If the camera is on a local network, 5 seconds is plenty of time to wait for a response. If the camera is on the internet, you may want to increase this timeout.
-		// Some newer FFmpeg builds use "timeout" instead of "stimeout", but if your build accepts stimeout, that's fine.
-		av_dict_set(&options, "stimeout", "5000000", 0);
+		av_dict_set(&options, "timeout", "5000000", 0);
 		// Increase the receive buffer, this is a 1 MB network buffer.
 		av_dict_set(&options, "buffer_size", "1048576", 0);
 	}
@@ -224,8 +223,10 @@ bool CCamera::Impl::Open(const std::string& url)
 	// Free the dictionary.
 	av_dict_free(&options);
 
-	if (result < 0)
+	if (result < 0){
+		// @@@@@@@@@@@@@ TO DO - eror reporting, here we have failed to open the stream.
 		return false;
+	}
 
 	// This tells FFmpeg to inspect the file (or stream) and discover its contents.
 	if (avformat_find_stream_info(m_formatContext, nullptr) < 0)
@@ -366,11 +367,11 @@ When to Use std::mutex
 
 bool CCameraThread::WriteNextFrame(const CFrame& frame)
 {
-	// This function is called in the producer thread after a new frame has been grabbed from the camera. 
-	// It converts the frame to RGB and writes it to the ring buffer.
+	// Convert frame to RGB24 and write it to the ring buffer.
 	bool Ok = true;
 	CFrame *pBuf = m_pRingBuf->AcquireWrite();
 	if (pBuf){
+		// todo use m_OutputFormat in m_Converter
 		if (!m_Converter.Convert(frame, *pBuf, true)){
 			m_ErrorLog += "\n convert to rgb failed \n";
 			Ok = false;
@@ -379,6 +380,7 @@ bool CCameraThread::WriteNextFrame(const CFrame& frame)
 	}
 	else {
 		// Frame dropped, ring buffer is full. The consumer is slower than the producer at the moment.
+		// No need for a sleep here because Cam.Grab() will block anyway until next frame is available.
 	}
 	return Ok;
 }
@@ -391,14 +393,15 @@ void CCameraThread::Run()
 		m_ErrorLog += "\n Open failed \n";
 		return;
 	}
-	// Open succeeded, now we can grab frames. Some initialisation first.
-	if (m_CameraReadyCallback)
-		m_CameraReadyCallback(Cam.m_VideoInfo, m_pCallbackParam);
 
 	if (!m_pRingBuf->InitRing()){
 		m_ErrorLog += "\n Ring buffer InitRing()==false \n";
 	}
 	else {
+		// Open succeeded, now we can grab frames.
+		if (m_CameraReadyCallback)
+			m_CameraReadyCallback(Cam.m_VideoInfo, m_pCallbackParam);
+
 		bool Ok = true;
 		while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 
@@ -513,7 +516,7 @@ void CImageProcessingThread::Run()
 			m_pInputRingBuf->ReleaseRead();
 		}
 		else {
-			// No frame available. The producer (camera thread) is slower than the consumer (this hread) at the moment.
+			// No frame available. The producer (camera thread) is slower than the consumer (this thread) at the moment.
 			std::this_thread::sleep_for(std::chrono::milliseconds(25));
 		}
 	}

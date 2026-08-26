@@ -41,4 +41,5 @@ public:
 	afx_msg LRESULT OnCameraReady(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnFrameReady(WPARAM wParam, LPARAM lParam);
 	afx_msg void OnBnClickedBtnConnect();
+	afx_msg void OnSize(UINT nType, int cx, int cy);
 };

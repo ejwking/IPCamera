@@ -41,6 +41,51 @@ void CMyBitmap::Delete()
 
 // ############################################################################################################################################
 
+class CGridLayout
+{
+public:
+	CGridLayout(int windowWidth, int windowHeight, int rows, int cols, int innerPadding, int outerPadding)
+		: m_width(windowWidth), m_height(windowHeight), m_rows(rows), m_cols(cols), m_inner(innerPadding), m_outer(outerPadding)
+	{
+		if (rows <= 0 || cols <= 0){
+			// ("Rows and columns must be > 0");
+		}
+		if (innerPadding < 0 || outerPadding < 0){
+			// ("Padding must be >= 0");
+		}
+	}
+
+	struct CellRect
+	{
+		int left, top, right, bottom;
+	};
+
+	CellRect GetCellRect(int row, int col) const
+	{
+		if (row < 0 || row >= m_rows || col < 0 || col >= m_cols){
+			// ("Cell index out of range");
+			return { 0, 0, 0, 0 };
+		}
+		// Effective drawable area after outer padding
+		int usableWidth  = m_width  - 2 * m_outer;
+		int usableHeight = m_height - 2 * m_outer;
+		int cellWidth  = usableWidth  / m_cols;
+		int cellHeight = usableHeight / m_rows;
+		int left   = m_outer + col * cellWidth  + m_inner;
+		int top    = m_outer + row * cellHeight + m_inner;
+		int right  = m_outer + (col + 1) * cellWidth  - m_inner;
+		int bottom = m_outer + (row + 1) * cellHeight - m_inner;
+		return { left, top, right, bottom };
+	}
+private:
+	int m_width, m_height;
+	int m_rows, m_cols;
+	int m_inner;   // padding inside each cell
+	int m_outer;   // padding around the grid
+};
+
+// ############################################################################################################################################
+
 bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg)
 {
 	if (!m_CamSetup.empty()){
@@ -132,23 +177,38 @@ bool CIPCameraManager::CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, C
 	return m_pCams[CameraIndex].CameraReadyMessageHandler(pScreen);
 }
 
+#define GET_X_SCALE(CellWd, VideoWd) ((VideoWd) > (CellWd)) ? (float)(CellWd)/(float)(VideoWd) : 1.0f;
+
 void CIPCameraManager::FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY)
 {
 	// GUI thread message handler.
 	int NumCams = m_CamSetup.size();
 	int CamIdx  = (int)wParam;
 	INT Code    = (int)lParam; // unused.
-	CIPCameraInterface *pCams = &m_pCams[CamIdx];
+	CIPCameraInterface &Cams = m_pCams[CamIdx];
 
-	// pCams->m_VideoInfo also need to know the other cameras m_VideoInfo (W and H)/ so we can calculate different 
-	// size display rects? ...unless no matter the video dimensions we fit every video display into the same size rect
-	// so window is divided up into equal size rects, yes 
-
-	int X = (WindowCX * CamIdx) / NumCams;		// temp - quick and rough
-	float Scale = (NumCams > 1) ? 0.3f : 1.0f;	// temp - quick and rough
-
-	// below need to provide the rect position the video must be fit into.
-	pCams->FrameReadyMessageHandler(pScreen, Scale, X, 20);
+	int Bdr = 5; // border around the cells.
+	if (NumCams == 1){
+		float Scale = GET_X_SCALE(WindowCX-(Bdr*2), Cams.m_VideoInfo.width);
+		Cams.FrameReadyMessageHandler(pScreen, Scale, Bdr, Bdr);
+	}
+	else if (NumCams <= 3){
+		// one row, up to 3 columns.
+		CGridLayout layout(WindowCX, WindowCY, 1, NumCams, Bdr, Bdr);
+		auto r = layout.GetCellRect(0, CamIdx);
+		float Scale = GET_X_SCALE(r.right-r.left, Cams.m_VideoInfo.width);
+		Cams.FrameReadyMessageHandler(pScreen, Scale, r.left, r.top);
+	}
+	else {
+		// 2 or more rows. Window divided up with sqrt, ie, 9 cells = 3 row, 3 cols.
+		// This is rough and simple way of doing it, I need to consider window aspect ratio and video aspect ratio.
+		int rows = static_cast<int>(std::sqrt(NumCams));
+		int cols = (NumCams + rows - 1) / rows;   // ceiling division
+		CGridLayout layout(WindowCX, WindowCY, rows, cols, Bdr, Bdr);
+		auto r = layout.GetCellRect(CamIdx / cols, CamIdx % cols);
+		float Scale = GET_X_SCALE(r.right-r.left, Cams.m_VideoInfo.width);
+		Cams.FrameReadyMessageHandler(pScreen, Scale, r.left, r.top);
+	}
 }
 
 CIPCameraManager::CIPCameraManager()
@@ -171,7 +231,7 @@ bool CIPCameraInterface::Start(const IPCAMERASETUP& Setup)
 		m_Setup = Setup; // make copy of.
 		m_CameraToProcessor.AssignBuffer(m_Frame, num_entries(m_Frame));
 		// to do - specify required image format (RGB 24, greyscale, ect).
-		m_CamThread.Start(m_Setup.Url, IMAGEFORMAT::IMGFMT_RGB24, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
+		m_CamThread.Start(m_Setup.Url, IMAGEFORMAT::IMGFMT_BGR24, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
 	}
 	return false;
 }
@@ -191,10 +251,8 @@ void CIPCameraInterface::Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS
 		// SendMessage(...) - blocks execution until the receiving window (GUI thread) processes the message.
 		// Using SendMessage is problematic here because, here is the scenario :
 		// Camera thread starts. Calls this callback but at that instant the window in closed, and m_CamThread.Terminate() is called in OnDestroy.
-		// Next, m_CamThread.Terminate() blocks the GUI thread until the camera thread terminates.
-		// But the camera thread cant terminate because SendMessage won't return until WM_APP_CAMERA_READY msg is processed.
-		// Conclusion - dont use SendMessage.
-		
+		// Next, m_CamThread.Terminate() blocks the GUI thread until the camera thread terminates. But the camera thread cant terminate because 
+		// SendMessage won't return until WM_APP_CAMERA_READY msg is processed. Conclusion - dont use SendMessage.
 		ipc->m_VideoInfo = VI;
 		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.CameraReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, 0);
 	}
@@ -206,7 +264,7 @@ void CIPCameraInterface::Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS
 // Anyway if frame ready messages do get dropped, then the ring buffer becames full and then cant post any new frame ready messages and then can never be 
 // emptied, hence no more frames get processed or come through to the GUI.
 // Although this is a debug/breakpoint scenario, could this scenario occur in normal running if the computer became bogged down?
-// ..maybe put in some safety code, just incase.
+// ..to do - put in some safety code for this.
 
 void CIPCameraInterface::Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS)
 {
