@@ -1,7 +1,6 @@
 
 #include "pch.h"
 #include "Camera.h"
-#include "ImageProcessing.h"
 
 // FFmpeg examples https://github.com/FFmpeg/FFmpeg/blob/master/doc/examples/demux_decode.c
 extern "C"
@@ -425,6 +424,7 @@ void CCameraThread::Run()
 void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
+		m_ErrorLog.clear();
 		m_CamURL = url;
 		m_OutputFormat = Output;	// NOT YET IMPLEMENTED
 		m_pRingBuf = pRingBuffer;
@@ -447,29 +447,43 @@ void CCameraThread::Terminate()
 
 bool CImageProcessingThread::CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest)
 {
-	if (pDest->pData){
-		if (pDest->Wd!=pSource->Width() || pDest->Ht!=pSource->Height() || pDest->LineSize!=pSource->LineSize()){
+	if (pDest->Image.pData){
+		if (pDest->Image.Wd!=pSource->Width() || pDest->Image.Ht!=pSource->Height() || pDest->Image.LineSize!=pSource->LineSize()){
 			m_ErrorLog += "\n Source and destination frame dimensions do not match, (camera resolution changed?) \n";
 			return false;
 		}
 		// Copy the RGB data from the frame into our (ring) buffer.
-		int Size = pDest->LineSize * pDest->Ht;
-		memcpy(pDest->pData, pSource->Data(), Size);
+		int Size = pDest->Image.LineSize * pDest->Image.Ht;
+		std::memcpy(pDest->Image.pData, pSource->Data(), Size);
 		return true;
 	}
 	m_ErrorLog += "\n Frame data is null \n";
 	return false;
 }
 
-bool CImageProcessingThread::DoImageProcessing(PROCESSED_FRAME *pFrame)
+bool CImageProcessingThread::ImageProcessing(PROCESSED_FRAME *pFrame)
 {
-	// Image processing logic here, eg, object detection.
-	// write results to a log file or database.
-	if (!Image_Processing(pFrame)){
-		m_ErrorLog += "\n error - image processing \n";
-		return false;
+	// Do something with the image here, eg, motion detection, object detection. Maybe video recording too.
+	// And could write results to a log file or database.
+
+	if (!m_InitImageProcessing){
+		m_MotionDetector.Initialise(pFrame->Image.Ht/120, pFrame->Image.Wd/120, 3, 3);
+		m_InitImageProcessing = true;
 	}
-	return true;
+
+	MDIMAGE img;
+	img.Wd = pFrame->Image.Wd;
+	img.Ht = pFrame->Image.Ht;
+	img.LineSize = pFrame->Image.LineSize;
+	img.pData = pFrame->Image.pData;
+
+	if (m_MotionDetector.Run(&img)){
+		// save image processing result to pFrame->ImgProcOut or
+		// maybe pass this structure to m_MotionDetector.Run
+		return true;
+	}
+	m_ErrorLog += "\n error - image processing \n";
+	return false;
 }
 
 bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
@@ -479,7 +493,7 @@ bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 	if (pBuf){
 		if (!CopyFrame(pRgbFrame, pBuf))
 			Ok = false;
-		else if (!DoImageProcessing(pBuf))
+		else if (!ImageProcessing(pBuf))
 			Ok = false;
 
 		m_pOutputRingBuf->ReleaseWrite();
@@ -493,7 +507,7 @@ bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 
 	// so... this producer should not (always) be waiting for the consumer (GUI thread) to read a frame and therefore free up a slot in the ring buffer,
 	// because the GUI will not be displaying most the time and image processing will be a background task. So if the GUI display is off then we can call 
-	// AcquireRead/ReleaseRead for every AcquireWrite/ReleaseWrite so that the ring buffer is always has a free slot for the next frame from the camera thread.
+	// AcquireRead/ReleaseRead for every AcquireWrite/ReleaseWrite so that the ring buffer always has a free slot for the next frame from the camera thread.
 /*	if (RunningInBackground){
 		if (m_pOutputRingBuf->AcquireRead())
 			m_pOutputRingBuf->ReleaseRead();
@@ -530,13 +544,20 @@ void CImageProcessingThread::Terminate()
 	}
 }
 
-void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam)
+void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex)
 {
 	if (!m_Thread.joinable()){
-		m_pInputRingBuf = pInputRingBuffer;
-		m_pOutputRingBuf = pOutputRingBuffer;
+		m_pInputRingBuf      = pInputRingBuffer;
+		m_pOutputRingBuf     = pOutputRingBuffer;
 		m_FrameReadyCallback = FrameReadyCallback;
-		m_pCallbackParam = pCallbackParam;
+		m_pCallbackParam     = pCallbackParam;
+		m_ThreadIndex        = ThreadIndex;	// not using.
+
+		// this object can be reused, so we need to re-initialize everything each time the thread is started.
+		// clear the error message log, and reset the image processing logic, etc.
+		m_InitImageProcessing = false;
+		m_ErrorLog.clear();
+
 		m_StopRequested.store(false, std::memory_order_relaxed);
 		m_Thread = std::thread(&CImageProcessingThread::Run, this);
 	}

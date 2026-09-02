@@ -85,8 +85,10 @@ void CIPCameraDlg::OnPaint()
 		CDialogEx::OnPaint();
 		if (m_pDC == nullptr)
 			m_pDC = this->GetDC();
-	//	static int ct=0;
-	//	TRACE("\n ##### OnPaint %d #####  ", ct++);
+
+		CRect rect;
+		GetClientRect(&rect);
+		m_CamManager.DrawGridLayout(m_pDC, rect.Width(), rect.Height());
 	}
 }
 
@@ -116,6 +118,10 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 {
 	m_CamManager.InitialiseSetup("C:\\EKING\\Projects\\C++\\IPCamera\\my notes\\config.txt", m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
 	m_CamManager.StartStreams();
+
+	CRect rect;
+	GetClientRect(&rect);
+	m_CamManager.DrawGridLayout(m_pDC, rect.Width(), rect.Height());
 
 	// to do,
 	// a disconnect button so i can connect/disconnect in the window.

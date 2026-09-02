@@ -4,7 +4,7 @@
 #include <string>
 #include <memory>
 #include <thread>
-
+#include "ImageProcessing.h"
 
 class CFrame
 {
@@ -157,7 +157,7 @@ struct IMG_PROC_OUTPUT
 	// ...
 };
 
-struct PROCESSED_FRAME
+struct IMAGE_BUF
 {
 	// pData - this is the image buffer CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame) will write to. 
 	// CImageProcessingThread is not responsible for this memory. It is up to the calling-thread/GUI code to allocate 
@@ -165,12 +165,16 @@ struct PROCESSED_FRAME
 	uint8_t	*pData=nullptr;
 	int      Wd=0, Ht=0;
 	int      Planes=0, LineSize=0, Padding=0;
-	// Data from image processing..
-	IMG_PROC_OUTPUT ImgProcOut;
-	void *pGuiData=nullptr;
 };
 
-enum IMAGEFORMAT
+struct PROCESSED_FRAME
+{
+	void           *pGuiData=nullptr;	// pointer the real bitmap (see class CMyBitmap) managed by the GDI functions.
+	IMAGE_BUF       Image;				// contains pointer to the raw bitmap bytes.
+	IMG_PROC_OUTPUT ImgProcOut;			// data output from image processing.
+};
+
+enum class IMAGEFORMAT
 {
 	IMGFMT_RGB24 = 0,
 	IMGFMT_BGR24,
@@ -211,7 +215,7 @@ class CImageProcessingThread
 public:
 	CImageProcessingThread(){}
 	~CImageProcessingThread(){ Terminate(); }
-	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam);
+	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex);
 	void Terminate();
 
 private:
@@ -222,10 +226,13 @@ private:
 	std::atomic<bool> m_StopRequested{false};
 	std::string       m_ErrorLog;
 	void             *m_pCallbackParam;
+	int               m_ThreadIndex;
+	bool              m_InitImageProcessing;
+	CMotionDetector   m_MotionDetector;
 
 	void Run();
 	bool CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest);
-	bool DoImageProcessing(PROCESSED_FRAME *pFrame);
+	bool ImageProcessing(PROCESSED_FRAME *pFrame);
 	bool WriteNextFrame(CFrame *pRgbFrame);
 	void (*m_FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
 };
@@ -240,6 +247,12 @@ private:
 // Option to have the display on or off, if off then image processing should run in background.
 //
 // Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.
+/*
+auto currentTime = std::chrono::high_resolution_clock::now();
+double elapsed = std::chrono::duration<double>(currentTime - prevTime).count();
+double fps = 1.0 / elapsed;
+prevTime = currentTime;
+*/
 
 
 

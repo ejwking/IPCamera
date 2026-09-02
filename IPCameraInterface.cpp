@@ -41,51 +41,6 @@ void CMyBitmap::Delete()
 
 // ############################################################################################################################################
 
-class CGridLayout
-{
-public:
-	CGridLayout(int windowWidth, int windowHeight, int rows, int cols, int innerPadding, int outerPadding)
-		: m_width(windowWidth), m_height(windowHeight), m_rows(rows), m_cols(cols), m_inner(innerPadding), m_outer(outerPadding)
-	{
-		if (rows <= 0 || cols <= 0){
-			// ("Rows and columns must be > 0");
-		}
-		if (innerPadding < 0 || outerPadding < 0){
-			// ("Padding must be >= 0");
-		}
-	}
-
-	struct CellRect
-	{
-		int left, top, right, bottom;
-	};
-
-	CellRect GetCellRect(int row, int col) const
-	{
-		if (row < 0 || row >= m_rows || col < 0 || col >= m_cols){
-			// ("Cell index out of range");
-			return { 0, 0, 0, 0 };
-		}
-		// Effective drawable area after outer padding
-		int usableWidth  = m_width  - 2 * m_outer;
-		int usableHeight = m_height - 2 * m_outer;
-		int cellWidth  = usableWidth  / m_cols;
-		int cellHeight = usableHeight / m_rows;
-		int left   = m_outer + col * cellWidth  + m_inner;
-		int top    = m_outer + row * cellHeight + m_inner;
-		int right  = m_outer + (col + 1) * cellWidth  - m_inner;
-		int bottom = m_outer + (row + 1) * cellHeight - m_inner;
-		return { left, top, right, bottom };
-	}
-private:
-	int m_width, m_height;
-	int m_rows, m_cols;
-	int m_inner;   // padding inside each cell
-	int m_outer;   // padding around the grid
-};
-
-// ############################################################################################################################################
-
 bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd, uint32_t CameraReadyMsg, uint32_t FrameReadyMsg)
 {
 	if (!m_CamSetup.empty()){
@@ -133,6 +88,7 @@ bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd,
 	// field : display_enabled
 	m_DisplayEnabled = cfg.getBool("display_enabled");
 
+	InitGridLayout();
 	return (m_CamSetup.size() > 0);
 }
 
@@ -177,37 +133,48 @@ bool CIPCameraManager::CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, C
 	return m_pCams[CameraIndex].CameraReadyMessageHandler(pScreen);
 }
 
-#define GET_X_SCALE(CellWd, VideoWd) ((VideoWd) > (CellWd)) ? (float)(CellWd)/(float)(VideoWd) : 1.0f;
-
 void CIPCameraManager::FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY)
 {
 	// GUI thread message handler.
 	int NumCams = m_CamSetup.size();
 	int CamIdx  = (int)wParam;
-	INT Code    = (int)lParam; // unused.
-	CIPCameraInterface &Cams = m_pCams[CamIdx];
+	int Code    = (int)lParam; // unused.
+	auto r = m_Grid.GetCellRect(WindowCX, WindowCY, CamIdx);
+	m_pCams[CamIdx].FrameReadyMessageHandler(pScreen, r.left, r.top, r.right-r.left, r.bottom-r.top);
+}
 
-	int Bdr = 5; // border around the cells.
-	if (NumCams == 1){
-		float Scale = GET_X_SCALE(WindowCX-(Bdr*2), Cams.m_VideoInfo.width);
-		Cams.FrameReadyMessageHandler(pScreen, Scale, Bdr, Bdr);
+int CIPCameraManager::DrawGridLayout(CDC *pScreen, int WindowCX, int WindowCY)
+{
+	int NumCams = m_CamSetup.size();
+	if (NumCams > 0){
+		for (int i=0; i<NumCams; i++){
+			auto r = m_Grid.GetCellRect(WindowCX, WindowCY, i);
+			CGdiObject *pOld = pScreen->SelectStockObject(DKGRAY_BRUSH);
+			pScreen->Rectangle(r.left, r.top, r.right, r.bottom);
+			pScreen->SelectObject(pOld);
+		}
+		return 1;
 	}
-	else if (NumCams <= 3){
-		// one row, up to 3 columns.
-		CGridLayout layout(WindowCX, WindowCY, 1, NumCams, Bdr, Bdr);
-		auto r = layout.GetCellRect(0, CamIdx);
-		float Scale = GET_X_SCALE(r.right-r.left, Cams.m_VideoInfo.width);
-		Cams.FrameReadyMessageHandler(pScreen, Scale, r.left, r.top);
-	}
-	else {
-		// 2 or more rows. Window divided up with sqrt, ie, 9 cells = 3 row, 3 cols.
-		// This is rough and simple way of doing it, I need to consider window aspect ratio and video aspect ratio.
-		int rows = static_cast<int>(std::sqrt(NumCams));
-		int cols = (NumCams + rows - 1) / rows;   // ceiling division
-		CGridLayout layout(WindowCX, WindowCY, rows, cols, Bdr, Bdr);
-		auto r = layout.GetCellRect(CamIdx / cols, CamIdx % cols);
-		float Scale = GET_X_SCALE(r.right-r.left, Cams.m_VideoInfo.width);
-		Cams.FrameReadyMessageHandler(pScreen, Scale, r.left, r.top);
+	return 0;
+}
+
+void CIPCameraManager::InitGridLayout()
+{
+	int Count = m_CamSetup.size();
+	if (Count > 0){
+		int Bdr = 5;
+		if (Count == 1)
+			m_Grid.Initialse(1, 1, Bdr, Bdr);
+		else if (Count <= 3)
+			// one row, up to 3 columns.
+			m_Grid.Initialse(1, Count, Bdr, Bdr);
+		else {
+			// 2 or more rows. Window divided up with sqrt, ie, 9 cells = 3 row, 3 cols.
+			// This is rough and simple way of doing it, I need to consider window aspect ratio and video aspect ratio.
+			int rows = static_cast<int>(std::sqrt(Count));
+			int cols = (Count + rows - 1) / rows;   // ceiling division
+			m_Grid.Initialse(rows, cols, Bdr, Bdr);
+		}	
 	}
 }
 
@@ -258,17 +225,18 @@ void CIPCameraInterface::Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS
 	}
 }
 
+// TODO @@@@@@@@@
 // When i hit a breakpoint in GUI thread (or was it img proc thread?), windows drops the frame ready msgs. Apparaently windows msg queue has 10,000 slots.
 // So if camera was doing 30fps, 10,000/30 = 333 seconds (5.5 minutes) until queue is full. Strange because I'm sure i didnt stop at breakpoint that
 // long, try it again.
-// Anyway if frame ready messages do get dropped, then the ring buffer becames full and then cant post any new frame ready messages and then can never be 
+// Anyway if frame ready messages do get dropped, then the ring buffer becomes full and then cant post any new frame ready messages and then can never be 
 // emptied, hence no more frames get processed or come through to the GUI.
-// Although this is a debug/breakpoint scenario, could this scenario occur in normal running if the computer became bogged down?
-// ..to do - put in some safety code for this.
+// Although this is a debug/breakpoint scenario, could this scenario occur in normal running if the computer became bogged down? Discuss with chatGPT.
+// ..to do - put in some safety code for this. Maybe thread should keep a timer, (also needed for fps), and if no frames have been emptied for X period...
 
 void CIPCameraInterface::Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS)
 {
-	// Called in the image processing thread and will post a message to the GUI thread. 
+	// Called in the image processing thread (CImageProcessingThread) and will post a message to the GUI thread. 
 	if (pParam){
 		CIPCameraInterface *ipc = (CIPCameraInterface*)pParam;
 		// Post message - non-blocking will put in receiving window (GUI thread) message queue.
@@ -285,54 +253,61 @@ bool CIPCameraInterface::CameraReadyMessageHandler(CDC *pScreen)
 		// HARD CODED
 		// Desired image format (eg, RGB 24, greyscale, ect) should be specified at startup, and passed to img proc thread.
 		// Currently img proc thread just outputs at RGB24, hence hard coded below - LineSize = Wd * 3;
-		PF.Wd       = m_VideoInfo.width;
-		PF.Ht       = m_VideoInfo.height;
-		PF.LineSize = PF.Wd * 3;
-		PF.Planes   = PF.LineSize / PF.Wd;
-		PF.Padding  = PF.LineSize - (PF.Wd * PF.Planes);
+		PF.Image.Wd       = m_VideoInfo.width;
+		PF.Image.Ht       = m_VideoInfo.height;
+		PF.Image.LineSize = PF.Image.Wd * 3;
+		PF.Image.Planes   = PF.Image.LineSize / PF.Image.Wd;
+		PF.Image.Padding  = PF.Image.LineSize - (PF.Image.Wd * PF.Image.Planes);
 
 		if (i < num_entries(m_GuiData)){
-			if (m_GuiData[i].Create(pScreen, PF.Wd, PF.Ht, 24, true)){
-				PF.pGuiData = (void*)&m_GuiData[i];
-				PF.pData    = m_GuiData[i].m_pData;
+			if (m_GuiData[i].Create(pScreen, PF.Image.Wd, PF.Image.Ht, 24, true)){
+				PF.pGuiData    = (void*)&m_GuiData[i];
+				PF.Image.pData = m_GuiData[i].m_pData;
 			}
 		}
 		else {
 			// m_GuiData and m_ProcessedFrame are defined separately, but have the same array size as each m_ProcessedFrame element contains a m_GuiData. I could 
-			// instead allocate memory for PF.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
+			// instead allocate memory for PF.Image.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
 			::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
 			return  false;
 		}
 	}
 	// Now the camera has started we can start the image processing thread.
 	m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
-	m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this);
+	m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this, m_Setup.MessageSubCode);
 	return true;
 }
 
-void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, float Scale, int X, int Y)
+#define GET_X_SCALE(CellWd, VideoWd) ((VideoWd) > (CellWd)) ? (float)(CellWd)/(float)(VideoWd) : 1.0f;
+void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, int Cell_Left, int Cell_Top, int Cell_Wd, int Cell_Ht)
 {
-	// GUI thread message handler.
+	// GUI thread frame ready message handler.
+	// Strictly for displaying the processed frame (and any associated data) in the GUI, not image processing etc - that is done in the image processing thread.
+	// Also this code here will be disabled/not-executed if the video display is disabled, so any processing here would be futile.
 	PROCESSED_FRAME *pBuf = m_ProcessorToGui.AcquireRead();
 	if (pBuf){
 		if (pScreen){
-			/*	VERSION REQUIRING EXTRA COPY, as it uses an intermediate 'new' buffer rather than directly using a CreateDIBSection created buffer.
-			if (InitDisplayDC(pScreen, &m_Pic, pBuf->Wd, pBuf->Ht)){
-				memcpy(m_Pic.pData, pBuf->pData, pBuf->Size);
-				pScreen->BitBlt(0, 0, pBuf->Wd, pBuf->Ht, &m_Pic.DC, 0, 0, SRCCOPY);
-				// alternatively, call InvalidateRect(...) and do the painting in OnPaint().
-			}*/
+			// VERSION REQUIRING EXTRA COPY, as it uses an intermediate 'new' buffer rather than directly using a CreateDIBSection created buffer.
+			// if (InitDisplayDC(pScreen, &m_Pic, pBuf->Wd, pBuf->Ht)){
+			//	 std::memcpy(m_Pic.pData, pBuf->pData, pBuf->Size);
+			//	 pScreen->BitBlt(0, 0, pBuf->Wd, pBuf->Ht, &m_Pic.DC, 0, 0, SRCCOPY);
+			// }
 			CMyBitmap *pMB = (CMyBitmap*)pBuf->pGuiData;
 			if (pMB){
 				if (pMB->IsCreated()){
 					DrawImgProcOutput(&pMB->m_MemDC, &pBuf->ImgProcOut);
+
+					// @@@@@ TODO FIX - 
+					// below for scaling and fitting picture in cell we make assumption that width is greater than height.
+					float Scale = GET_X_SCALE(Cell_Wd, pBuf->Image.Wd);
 					if (Scale == 1.0f)
-						pScreen->BitBlt(X, Y, pBuf->Wd, pBuf->Ht, &pMB->m_MemDC, 0, 0, SRCCOPY);
+						pScreen->BitBlt(Cell_Left, Cell_Top, pBuf->Image.Wd, pBuf->Image.Ht, &pMB->m_MemDC, 0, 0, SRCCOPY);
 					else {
-						int Wd = (int)((float)pBuf->Wd * Scale);
-						int Ht = (int)((float)pBuf->Ht * Scale);
+						int Wd = (int)((float)pBuf->Image.Wd * Scale);
+						int Ht = (int)((float)pBuf->Image.Ht * Scale);
+						int Center_Y = (Ht < Cell_Ht) ? ((Cell_Ht - Ht) / 2) : 0;
 						pScreen->SetStretchBltMode(HALFTONE);
-						pScreen->StretchBlt(X, Y, Wd, Ht, &pMB->m_MemDC, 0, 0, pBuf->Wd, pBuf->Ht, SRCCOPY);
+						pScreen->StretchBlt(Cell_Left, Cell_Top+Center_Y, Wd, Ht, &pMB->m_MemDC, 0, 0, pBuf->Image.Wd, pBuf->Image.Ht, SRCCOPY);
 					}
 				}
 			}
@@ -358,7 +333,7 @@ void CIPCameraInterface::DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO)
 	// Temporary hard coding for testing.
 	// Shouldnt be recreating pen every time, can create once and re-use.
 	// ..Have a separate module/class for drawing.
-	CPen *oldpen, pen(Style, 3, RGB(155,0,155));
+	CPen *oldpen, pen(Style, 5, RGB(155,0,155));
 	oldpen = pCDC->SelectObject(&pen);
 	pCDC->SetROP2(R2_COPYPEN);
 	int Max = num_entries(pIPO->Pt);
@@ -371,3 +346,18 @@ void CIPCameraInterface::DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO)
 	//pCDC->PolyDraw(...);
 	pCDC->SelectObject(oldpen);
 }
+
+
+/*
+void CDisplay::TextOnDisplay(CDC *pDC, char *pText, COLORREF CR, int x, int y, int Size)
+{
+	pDC->SetBkMode(OPAQUE);//TRANSPARENT
+	COLORREF oldBkCol = pDC->SetBkColor(RGB(0,0,0));
+	CFont   *oldobj   = pDC->SelectObject((Size==0) ? &m_GdiObjs.Font_16 : &m_GdiObjs.Font_24);
+	COLORREF oldTxCol = pDC->SetTextColor(CR);
+	pDC->TextOut(x, y, pText);
+	pDC->SetBkColor(oldBkCol);
+	pDC->SelectObject(oldobj);
+	pDC->SetTextColor(oldTxCol);
+}
+*/

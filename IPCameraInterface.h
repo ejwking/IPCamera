@@ -20,7 +20,7 @@ public:
 	HBITMAP    m_hBitmap=nullptr;
 	BITMAPINFO m_BMI={0};
 	uint8_t	  *m_pData=nullptr;
-	CDC        m_MemDC;	// virtual drawing surface in memory.
+	CDC        m_MemDC;	// Virtual drawing surface in memory, with the dimensions of our (rgb24 converted) camera frame.
 
 	CMyBitmap(){}
 	~CMyBitmap(){ Delete(); }
@@ -49,7 +49,7 @@ public:
 	bool Start(const IPCAMERASETUP& Setup);
 	void Shutdown();
 	bool CameraReadyMessageHandler(CDC *pScreen);
-	void FrameReadyMessageHandler(CDC *pScreen, float Scale, int X, int Y);	// pScreen, change name to pCDC ? ..because it might not yet be the screen.
+	void FrameReadyMessageHandler(CDC *pScreen, int Cell_Left, int Cell_Top, int Cell_Wd, int Cell_Ht);
 
 private:
 	bool          m_Init=0;
@@ -59,15 +59,64 @@ private:
 	CFrame                 m_Frame[RING_BUF_SLOTS];
 	SPSCRingBuffer<CFrame> m_CameraToProcessor;
 	CCameraThread          m_CamThread;
+	
 	// image processing thread data..
-	CMyBitmap                       m_GuiData[RING_BUF_SLOTS];
 	PROCESSED_FRAME                 m_ProcessedFrame[RING_BUF_SLOTS];
+	CMyBitmap                       m_GuiData[num_entries(m_ProcessedFrame)];
 	SPSCRingBuffer<PROCESSED_FRAME> m_ProcessorToGui;
 	CImageProcessingThread          m_ImgProcThread;
 
 	static void Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS);
 	static void Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS);
 	void DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO);
+};
+
+
+class CGridLayout
+{
+public:
+	void Initialse(int rows, int cols, int innerPadding, int outerPadding)
+	{
+		m_rows = rows;
+		m_cols = cols;
+		m_inner = innerPadding;
+		m_outer = outerPadding;
+	}
+
+	struct CellRect
+	{
+		int left, top, right, bottom;
+	};
+
+	CellRect GetCellRect(int windowWidth, int windowHeight, int row, int col)
+	{
+		m_width = windowWidth;
+		m_height = windowHeight;
+		if (row < 0 || row >= m_rows || col < 0 || col >= m_cols){
+			// ("Cell index out of range");
+			return { 0, 0, 0, 0 };
+		}
+		// Effective drawable area after outer padding
+		int usableWidth  = m_width  - 2 * m_outer;
+		int usableHeight = m_height - 2 * m_outer;
+		int cellWidth  = usableWidth  / m_cols;
+		int cellHeight = usableHeight / m_rows;
+		int left   = m_outer + col * cellWidth  + m_inner;
+		int top    = m_outer + row * cellHeight + m_inner;
+		int right  = m_outer + (col + 1) * cellWidth  - m_inner;
+		int bottom = m_outer + (row + 1) * cellHeight - m_inner;
+		return { left, top, right, bottom };
+	}
+
+	CellRect GetCellRect(int windowWidth, int windowHeight, int index)
+	{
+		return GetCellRect(windowWidth, windowHeight, index/m_cols, index%m_cols);
+	}
+private:
+	int m_width=0, m_height=0;
+	int m_rows=0, m_cols=0;
+	int m_inner;   // padding inside each cell
+	int m_outer;   // padding around the grid
 };
 
 
@@ -84,6 +133,9 @@ private:
 	CIPCameraInterface *m_pCams=nullptr;
 	std::vector<IPCAMERASETUP> m_CamSetup;
 	bool m_DisplayEnabled;
+	CGridLayout m_Grid;
+
+	void InitGridLayout();
 
 public:
 	CIPCameraManager();
@@ -94,6 +146,7 @@ public:
 	void TerminateStreams();
 	bool CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen);
 	void FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY);
+	int  DrawGridLayout(CDC *pScreen, int WindowCX, int WindowCY);
 };
 
 
