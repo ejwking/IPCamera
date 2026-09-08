@@ -166,6 +166,7 @@ public:
 CCamera::CCamera()
 {
 	m_Impl = std::make_unique<Impl>();
+	m_VideoInfo.Reset();
 }
 
 CCamera::~CCamera()
@@ -193,15 +194,14 @@ void CCamera::GetVideoInfo()
 	AVStream* stream = m_Impl->m_formatContext->streams[m_Impl->m_videoStream];
 	AVCodecParameters* codec = stream->codecpar;
 	const AVCodecDescriptor* desc = avcodec_descriptor_get(codec->codec_id);
-	
-	m_VideoInfo.width = codec->width;
-	m_VideoInfo.height = codec->height;
-	m_VideoInfo.fps = av_q2d(stream->avg_frame_rate);
-	m_VideoInfo.codec_id = codec->codec_id;
-	m_VideoInfo.codecName = desc ? desc->name : "Unknown";
-
+	m_VideoInfo.StreamOpen = true;
+	m_VideoInfo.width      = codec->width;
+	m_VideoInfo.height     = codec->height;
+	m_VideoInfo.fps        = av_q2d(stream->avg_frame_rate);
+	m_VideoInfo.codec_id   = codec->codec_id;
+	m_VideoInfo.codecName  = desc ? desc->name : "Unknown";
 	// temp, remove this, TRACE shouldnt be in here.
-	TRACE("\n\nWidth  : %d\nHeight : %d\nCodec ID : %d\nFPS : %f\nCodec : %s\n     ", m_VideoInfo.width, m_VideoInfo.height, m_VideoInfo.codec_id, m_VideoInfo.fps, m_VideoInfo.codecName.c_str());
+	TRACE("\n\nWidth  : %d\nHeight : %d\nCodec ID : %d\nFPS : %f\nCodec : %s\n  ", m_VideoInfo.width, m_VideoInfo.height, m_VideoInfo.codec_id, m_VideoInfo.fps, m_VideoInfo.codecName.c_str());
 }
 
 bool CCamera::Impl::Open(const std::string& url)
@@ -223,7 +223,7 @@ bool CCamera::Impl::Open(const std::string& url)
 	av_dict_free(&options);
 
 	if (result < 0){
-		// @@@@@@@@@@@@@ TO DO - eror reporting, here we have failed to open the stream.
+		// TODO - eror reporting, here we have failed to open the stream.
 		return false;
 	}
 
@@ -279,6 +279,7 @@ bool CCamera::Impl::Open(const std::string& url)
 
 bool CCamera::Open(const std::string& url)
 {
+	m_VideoInfo.Reset();
 	if (m_Impl->m_videoStream == -1){
 		if (!m_Impl->Open(url)){
 			Close();
@@ -372,7 +373,7 @@ bool CCameraThread::WriteNextFrame(const CFrame& frame)
 	if (pBuf){
 		// todo use m_OutputFormat in m_Converter
 		if (!m_Converter.Convert(frame, *pBuf, true)){
-			m_ErrorLog += "\n convert to rgb failed \n";
+			m_ErrorLog.push_back("convert to rgb failed");
 			Ok = false;
 		}
 		m_pRingBuf->ReleaseWrite();
@@ -387,23 +388,25 @@ bool CCameraThread::WriteNextFrame(const CFrame& frame)
 void CCameraThread::Run()
 {
 	// To do - proper error reporting for when thread exits unexpectedly.
+	bool Ok = true;
 	CCamera Cam;
 	if (!Cam.Open(m_CamURL)){
-		m_ErrorLog += "\n Open failed \n";
-		return;
+		m_ErrorLog.push_back("Camera open failed");
+		Ok = false;
 	}
 
 	if (!m_pRingBuf->InitRing()){
-		m_ErrorLog += "\n Ring buffer InitRing()==false \n";
+		m_ErrorLog.push_back("Ring buffer InitRing()==false");
+		Ok = false;
 	}
-	else {
+
+	// Call the callback whether Cam.Open(..) suceeds or fails, because parent thread needs to know either way.
+	if (m_CameraReadyCallback)
+		m_CameraReadyCallback(Cam.m_VideoInfo, m_pCallbackParam);
+
+	if (Ok){
 		// Open succeeded, now we can grab frames.
-		if (m_CameraReadyCallback)
-			m_CameraReadyCallback(Cam.m_VideoInfo, m_pCallbackParam);
-
-		bool Ok = true;
 		while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
-
 			// Grab will naturally block waiting for the next frame.
 			if (Cam.Grab()){
 				const CFrame& frame = Cam.CurrentFrame();
@@ -412,7 +415,7 @@ void CCameraThread::Run()
 			}
 			else {
 				// Lost stream?
-				m_ErrorLog += "\n Grab failed \n";
+				m_ErrorLog.push_back("Grab failed");
 				Ok = false;
 				// alternatively, sleep for a while - std::this_thread::sleep_for(std::chrono::seconds(1));
 				// and attempt reconnect. See comments in Cam.Grab()
@@ -421,7 +424,7 @@ void CCameraThread::Run()
 	}
 }
 
-void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam)
+void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, CRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_ErrorLog.clear();
@@ -449,7 +452,7 @@ bool CImageProcessingThread::CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest)
 {
 	if (pDest->Image.pData){
 		if (pDest->Image.Wd!=pSource->Width() || pDest->Image.Ht!=pSource->Height() || pDest->Image.LineSize!=pSource->LineSize()){
-			m_ErrorLog += "\n Source and destination frame dimensions do not match, (camera resolution changed?) \n";
+			m_ErrorLog.push_back("Source and destination frame dimensions do not match, (camera resolution changed?)");
 			return false;
 		}
 		// Copy the RGB data from the frame into our (ring) buffer.
@@ -457,7 +460,7 @@ bool CImageProcessingThread::CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest)
 		std::memcpy(pDest->Image.pData, pSource->Data(), Size);
 		return true;
 	}
-	m_ErrorLog += "\n Frame data is null \n";
+	m_ErrorLog.push_back("Frame data is null");
 	return false;
 }
 
@@ -466,10 +469,22 @@ bool CImageProcessingThread::ImageProcessing(PROCESSED_FRAME *pFrame)
 	// Do something with the image here, eg, motion detection, object detection. Maybe video recording too.
 	// And could write results to a log file or database.
 
-	if (!m_InitImageProcessing){
-		m_MotionDetector.Initialise(pFrame->Image.Ht/120, pFrame->Image.Wd/120, 3, 3);
-		m_InitImageProcessing = true;
-	}
+	bool DoMotionDetection = true;
+/*	bool DoMotionDetection = false;
+	auto timeNow           = std::chrono::steady_clock::now();
+	auto motionInterval    = std::chrono::milliseconds(120);
+
+	if(timeNow-m_Timer >= motionInterval){
+		m_Timer = timeNow;
+		// Do motion detection roughly every motionInterval milliseconds. ..Roughly because when the interval exceeds motionInterval we don't reduce the next interval 
+		// to make up for the delay, if we did then when the thread gets held up for a while we'd potentially have to run motion detection repeatedly to catch up.
+		DoMotionDetection = true;
+		// Although this timed method is good to cope with any camera and any frame rate, I'm not sure i like it, because if the camera is doing 
+		// 15 fps (66ms per frame) then a desired motionInterval will vary by 66ms.
+		//
+		// idea, do every, or every other frame etc. But check CurrentFPS is at the FFmpeg stated video fps, if fps is slowing down increase the
+		// motion detection frame skips.
+	}*/
 
 	MDIMAGE img;
 	img.Wd = pFrame->Image.Wd;
@@ -477,13 +492,25 @@ bool CImageProcessingThread::ImageProcessing(PROCESSED_FRAME *pFrame)
 	img.LineSize = pFrame->Image.LineSize;
 	img.pData = pFrame->Image.pData;
 
-	if (m_MotionDetector.Run(&img)){
-		// save image processing result to pFrame->ImgProcOut or
-		// maybe pass this structure to m_MotionDetector.Run
-		return true;
+	if (!m_InitImageProcessing){
+		int cell_size_pixels = 100;
+		int rows = (pFrame->Image.Ht + (cell_size_pixels/2)) / cell_size_pixels;	// rounding to nearest integer
+		int cols = (pFrame->Image.Wd + (cell_size_pixels/2)) / cell_size_pixels;
+		m_MotionDetector.Initialise(img, rows, cols, 4, 1, 1);
+		m_InitImageProcessing = true;
 	}
-	m_ErrorLog += "\n error - image processing \n";
-	return false;
+
+	// motionInterval - Skipping frames will have the effect of speeding up the motion of an object, consequences would be : 
+	// 1. very slow moving object more likely to trigger motion detection.
+	// 2. very fast moving object, more likely to miss it altogether.
+	// 
+	// @@@@ I've disabled motionInterval, motion detection is done on every frame, and when running 2 cameras cpu usage is only 3%.
+	if (!m_MotionDetector.Run(&img, DoMotionDetection)){
+		m_ErrorLog.push_back("error - image processing");
+		return false;
+	}
+	// todo - save image processing result to pFrame->ImgProcOut or maybe pass this structure to m_MotionDetector.Run
+	return true;
 }
 
 bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
@@ -495,6 +522,9 @@ bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
 			Ok = false;
 		else if (!ImageProcessing(pBuf))
 			Ok = false;
+
+		m_FpsCounter.Frame();
+		pBuf->CurrentFPS = m_FpsCounter.GetFPS();
 
 		m_pOutputRingBuf->ReleaseWrite();
 		// Optional callback for consumer specific instructions now we have processed a new frame.
@@ -519,10 +549,15 @@ void CImageProcessingThread::Run()
 {
 	// To do - proper error reporting for when thread exits unexpectedly.
 	if (!m_pOutputRingBuf->InitRing()){
-		m_ErrorLog += "\n Ring buffer InitRing()==false \n";
+		m_ErrorLog.push_back("Ring buffer InitRing()==false");
 		return;
 	}
+	
 	bool Ok = true;
+	m_InitImageProcessing = false;
+	m_Timer = std::chrono::steady_clock::now();
+	m_FpsCounter.Init(30);	// rolling average of 30 frames.
+
 	while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 		CFrame *pRgbFrame = m_pInputRingBuf->AcquireRead();
 		if (pRgbFrame){
@@ -544,7 +579,7 @@ void CImageProcessingThread::Terminate()
 	}
 }
 
-void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex)
+void CImageProcessingThread::Start(CRingBuffer<CFrame> *pInputRingBuffer, CRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex)
 {
 	if (!m_Thread.joinable()){
 		m_pInputRingBuf      = pInputRingBuffer;
@@ -552,12 +587,7 @@ void CImageProcessingThread::Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPS
 		m_FrameReadyCallback = FrameReadyCallback;
 		m_pCallbackParam     = pCallbackParam;
 		m_ThreadIndex        = ThreadIndex;	// not using.
-
-		// this object can be reused, so we need to re-initialize everything each time the thread is started.
-		// clear the error message log, and reset the image processing logic, etc.
-		m_InitImageProcessing = false;
 		m_ErrorLog.clear();
-
 		m_StopRequested.store(false, std::memory_order_relaxed);
 		m_Thread = std::thread(&CImageProcessingThread::Run, this);
 	}

@@ -56,15 +56,15 @@ private:
 	IPCAMERASETUP m_Setup;
 
 	// camera thread data..
-	CFrame                 m_Frame[RING_BUF_SLOTS];
-	SPSCRingBuffer<CFrame> m_CameraToProcessor;
-	CCameraThread          m_CamThread;
+	CFrame              m_Frame[RING_BUF_SLOTS];
+	CRingBuffer<CFrame> m_CameraToProcessor;
+	CCameraThread       m_CamThread;
 	
 	// image processing thread data..
-	PROCESSED_FRAME                 m_ProcessedFrame[RING_BUF_SLOTS];
-	CMyBitmap                       m_GuiData[num_entries(m_ProcessedFrame)];
-	SPSCRingBuffer<PROCESSED_FRAME> m_ProcessorToGui;
-	CImageProcessingThread          m_ImgProcThread;
+	PROCESSED_FRAME              m_ProcessedFrame[RING_BUF_SLOTS];
+	CMyBitmap                    m_GuiData[num_entries(m_ProcessedFrame)];
+	CRingBuffer<PROCESSED_FRAME> m_ProcessorToGui;
+	CImageProcessingThread       m_ImgProcThread;
 
 	static void Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS);
 	static void Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS);
@@ -126,16 +126,16 @@ private:
 class CIPCameraManager
 {
 private:
-	// to do  
-	// std::vector<std::string> m_Errors;
-	// , also change my other error handling to a std::vector<std::string>
+	// std::vector<std::string> m_Errors;	to do  add error log.
 
 	CIPCameraInterface *m_pCams=nullptr;
 	std::vector<IPCAMERASETUP> m_CamSetup;
 	bool m_DisplayEnabled;
 	CGridLayout m_Grid;
+	int m_NumOpenStreams;
 
 	void InitGridLayout();
+	int  CamIndexToGridCellIndex(int CamIdx);
 
 public:
 	CIPCameraManager();
@@ -148,18 +148,4 @@ public:
 	void FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY);
 	int  DrawGridLayout(CDC *pScreen, int WindowCX, int WindowCY);
 };
-
-
-/*
-dont get bogged down on nice-ities, project is about learning new stuff, not spending ages implementing details
-
-image processing
-  - OpenCV for OCR, motion detection, and what else does it do?
-  - Darknet for object detection
-  - maybe Ollama and a LLM ( Gemma4 ).
-
-linux, and/or Web UI.
-
-DVR functionality, my own Ip cam recording on pc/Linux 
-*/
 

@@ -7,20 +7,50 @@
 
 //extern bool Image_Processing(PROCESSED_FRAME *pImg, int ThreadIndex);
 
-
 struct MDIMAGE
 {
 	uint8_t	*pData=nullptr;
-	int      Wd=0, Ht=0;
-	int      Planes=0, LineSize=0, Padding=0;
+	int      Wd, Ht;
+	int      Planes, LineSize, Padding;
 };
+
+
+class CBitmapShrinker
+{
+public:
+	~CBitmapShrinker();
+	void Initialise(int width, int height, int factor);
+
+	// Returns pointer to resized bitmap (RGB)
+	uint8_t* GetOutput() const { return m_out; }
+	int GetOutputWidth()  const { return m_outW; }
+	int GetOutputHeight() const { return m_outH; }
+
+	// Perform the shrink
+	void Process(const uint8_t* input);
+	void DrawOutputOnBuffer(MDIMAGE *pBuf);
+
+private:
+	uint8_t* m_out = nullptr;
+	int m_w=0, m_h=0;
+	int m_factor;
+	int m_outW=0, m_outH=0;
+};
+
+
 
 class CMotionDetector
 {
 public:
+	~CMotionDetector()
+	{
+		if (m_PreviousFrame)
+			delete[] m_PreviousFrame;
+	}
+
 	// verticalSample and horizontalSample, eg: 1 = process every line, 2 = every second line, 3 = every third line, etc.
-	void Initialise(int rows, int columns, int verticalSample = 1, int horizontalSample = 1);
-	bool Run(MDIMAGE *pImg);
+	void Initialise(const MDIMAGE& image, int rows, int columns, int BitmapReductionFactor, int verticalSample = 1, int horizontalSample = 1);
+	bool Run(MDIMAGE *pImg, bool Refresh);
 	int GetRows() const
 	{
 		return m_Rows;
@@ -48,10 +78,12 @@ private:
 	bool m_HavePreviousFrame = false;
 
 	int    m_PixelThreshold  = 30;
-	double m_MotionThreshold = 10.0;
+	double m_MotionThreshold = 35.0; // also linked to grid cell size, because if the cell is larger it will be harder to meet the threshold with the movement of small objects.
+
+	CBitmapShrinker m_Shrunk;
 
 	// Previous image has exactly the same dimensions and LineSize as the source image.
-	std::vector<uint8_t> m_PreviousFrame;
+	uint8_t* m_PreviousFrame=nullptr;
 	// One byte per cell.
 	std::vector<uint8_t> m_Motion;
 

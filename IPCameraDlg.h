@@ -17,6 +17,7 @@ public:
 
 	CIPCameraManager m_CamManager;
 	CDC *m_pDC=nullptr;
+	CRect GetCameraDisplayArea();
 
 // Dialog Data
 #ifdef AFX_DESIGN_TIME

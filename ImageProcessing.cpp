@@ -14,7 +14,79 @@
 #undef min
 
 
-void CMotionDetector::Initialise(int rows, int columns, int verticalSample, int horizontalSample)
+void CBitmapShrinker::Initialise(int width, int height, int factor)
+{
+	if (!m_out){
+		//	if (width <= 0 || height <= 0) throw std::invalid_argument("Invalid dimensions");
+		//	if (factor <= 0) throw std::invalid_argument("Factor must be > 0");
+		m_w = width;
+		m_h = height;
+		m_factor = factor;
+		m_outW = width  / factor;
+		m_outH = height / factor;
+
+		//	if (m_outW <= 0 || m_outH <= 0)
+		//		throw std::invalid_argument("Shrink factor too large");
+		// Allocate output buffer (RGB)
+		m_out = new uint8_t[m_outW * m_outH * 3];
+
+		// m_out - error check.
+	}
+}
+
+CBitmapShrinker::~CBitmapShrinker()
+{
+	if (m_out)
+		delete[] m_out;
+}
+
+// Perform the shrink
+void CBitmapShrinker::Process(const uint8_t* input)
+{
+	const int F = m_factor;
+	for (int y = 0; y < m_outH; ++y){
+		for (int x = 0; x < m_outW; ++x){
+			// Accumulators for averaging
+			uint32_t rSum = 0, gSum = 0, bSum = 0;
+			// Top-left of the block in the input
+			int inY0 = y * F;
+			int inX0 = x * F;
+			for (int yy = 0; yy < F; ++yy){
+				const uint8_t* rowPtr = input + ((inY0 + yy) * m_w * 3);
+				for (int xx = 0; xx < F; ++xx){
+					const uint8_t* px = rowPtr + (inX0 + xx) * 3;
+					rSum += px[0];
+					gSum += px[1];
+					bSum += px[2];
+				}
+			}
+			// Average
+			uint32_t count = F * F;
+			uint8_t r = static_cast<uint8_t>(rSum / count);
+			uint8_t g = static_cast<uint8_t>(gSum / count);
+			uint8_t b = static_cast<uint8_t>(bSum / count);
+			// Write output pixel
+			uint8_t* outPx = m_out + (y * m_outW + x) * 3;
+			outPx[0] = r;
+			outPx[1] = g;
+			outPx[2] = b;
+		}
+	}
+}
+
+void CBitmapShrinker::DrawOutputOnBuffer(MDIMAGE *pBuf)
+{
+	if (m_outH>0 && m_outW>0 && m_out){
+		for (int y = 0; y < m_outH; ++y){
+			// copy line.
+			uint8_t* dest = pBuf->pData + y * pBuf->LineSize;
+			uint8_t* src  = m_out + y * m_outW * 3;
+			memcpy(dest, src, sizeof(uint8_t) * m_outW * 3);
+		}
+	}
+}
+
+void CMotionDetector::Initialise(const MDIMAGE& image, int rows, int columns, int BitmapReductionFactor, int verticalSample, int horizontalSample)
 {
 	m_Rows = rows;
 	m_Columns = columns;
@@ -26,8 +98,11 @@ void CMotionDetector::Initialise(int rows, int columns, int verticalSample, int 
 	m_PreviousHt       = 0;
 	m_PreviousLineSize = 0;
 	m_HavePreviousFrame = false;
+
+	m_Shrunk.Initialise(image.Wd, image.Ht, BitmapReductionFactor);
 }
 
+//#define USE_GREYSCALE_CALCULATION
 const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 {
 	// Basic validation
@@ -48,17 +123,19 @@ const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 		image.LineSize != m_PreviousLineSize)
 	{
 		// Previous frame has exactly the same layout as the source image.
-		m_PreviousFrame.resize(static_cast<size_t>(image.LineSize) * static_cast<size_t>(image.Ht));
+		if (m_PreviousFrame)	// quick hack, not wrong but messy. actually the image size will not, and must not, change.
+			delete[] m_PreviousFrame;
+
+		m_PreviousFrame = new uint8_t[image.LineSize * image.Ht];
 		m_PreviousWd        = image.Wd;
 		m_PreviousHt        = image.Ht;
 		m_PreviousLineSize  = image.LineSize;
 		m_HavePreviousFrame = false;
 	}
 
-	if (!m_HavePreviousFrame)
-	{
+	if (!m_HavePreviousFrame){
 		// First frame - There is nothing to compare it against.
-		std::memcpy(m_PreviousFrame.data(), image.pData, static_cast<size_t>(image.LineSize) * static_cast<size_t>(image.Ht));
+		std::memcpy(m_PreviousFrame, image.pData, static_cast<size_t>(image.LineSize) * static_cast<size_t>(image.Ht));
 		std::fill(m_Motion.begin(), m_Motion.end(), 0);
 		m_HavePreviousFrame = true;
 		return m_Motion.data();
@@ -68,63 +145,56 @@ const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 	std::fill(m_Motion.begin(), m_Motion.end(), 0);
 
 	// Cell dimensions
-	const int cellWidth  = image.Wd / m_Columns;
-	const int cellHeight = image.Ht / m_Rows;
+	int cellWidth  = image.Wd / m_Columns;
+	int cellHeight = image.Ht / m_Rows;
 
 	// Process cells
-	for (int row = 0; row < m_Rows; ++row)
-	{
-		const int yStart = row * cellHeight;
-		const int yEnd = (row == m_Rows - 1) ? image.Ht : yStart + cellHeight;
+	for (int row = 0; row < m_Rows; ++row){
+		int yStart = row * cellHeight;
+		int yEnd = (row == m_Rows - 1) ? image.Ht : yStart + cellHeight;
 
-		for (int col = 0; col < m_Columns; ++col)
-		{
-			const int xStart = col * cellWidth;
-			const int xEnd = (col == m_Columns - 1) ? image.Wd : xStart + cellWidth;
-			const int cellWidthActual = xEnd - xStart;
-			const int cellHeightActual = yEnd - yStart;
+		for (int col = 0; col < m_Columns; ++col){
+			int xStart = col * cellWidth;
+			int xEnd = (col == m_Columns - 1) ? image.Wd : xStart + cellWidth;
+			int cellWidthActual = xEnd - xStart;
+			int cellHeightActual = yEnd - yStart;
 
 			// Because we are sampling the image, the number of pixels actually examined is smaller than the physical cell size.
-			const int sampledWidth = (cellWidthActual + m_HorizontalSample - 1) / m_HorizontalSample;
-			const int sampledHeight = (cellHeightActual + m_VerticalSample - 1) / m_VerticalSample;
+			int sampledWidth = (cellWidthActual + m_HorizontalSample - 1) / m_HorizontalSample;
+			int sampledHeight = (cellHeightActual + m_VerticalSample - 1) / m_VerticalSample;
 
-			const int totalSampledPixels = sampledWidth * sampledHeight;
-			const double requiredPixels = totalSampledPixels * (m_MotionThreshold / 100.0);
+			int totalSampledPixels = sampledWidth * sampledHeight;
+			double requiredPixels = totalSampledPixels * (m_MotionThreshold / 100.0);
 
 			int changedPixels = 0;
 
 			// Sample lines vertically
-			for (int y = yStart; y < yEnd; y += m_VerticalSample)
-			{
-				const uint8_t* current = image.pData + static_cast<size_t>(y) * image.LineSize + static_cast<size_t>(xStart) * 3;
-				const uint8_t* previous = m_PreviousFrame.data() + static_cast<size_t>(y) * m_PreviousLineSize + static_cast<size_t>(xStart) * 3;
+			for (int y = yStart; y < yEnd; y += m_VerticalSample){
+				uint8_t* current = image.pData + static_cast<size_t>(y) * image.LineSize + static_cast<size_t>(xStart) * 3;
+				uint8_t* previous = m_PreviousFrame + static_cast<size_t>(y) * m_PreviousLineSize + static_cast<size_t>(xStart) * 3;
 
 				// Sample pixels horizontally
-				for (int x = xStart; x < xEnd; x += m_HorizontalSample)
-				{
-					// RGB24 -> simple brightness value.
-					// We don't actually need to calculate an accurate luminance value. An average is sufficient for basic motion detection.
-					const int currentGray  = (current[0] + current[1] + current[2]) / 3;
-					const int previousGray = (previous[0] + previous[1] + previous[2]) / 3;
-					const int difference   = std::abs(currentGray - previousGray);
+				for (int x = xStart; x < xEnd; x += m_HorizontalSample){
 
-					/*
+#ifdef USE_GREYSCALE_CALCULATION
+					// RGB24 -> simple brightness value.
+					int currentGray  = (current[0] + current[1] + current[2]) / 3;
+					int previousGray = (previous[0] + previous[1] + previous[2]) / 3;
+					int difference   = std::abs(currentGray - previousGray);
+#else
 					int dr = std::abs(current[0] - previous[0]);
 					int dg = std::abs(current[1] - previous[1]);
 					int db = std::abs(current[2] - previous[2]);
 
 					// Use the largest RGB difference.
-					//const int difference = std::max({ dr, dg, db });
+					//int difference = std::max({ dr, dg, db });
 					int difference = std::max(dr, dg);
 					difference = std::max(difference, db);
-					*/                    
-
-					if (difference >= m_PixelThreshold)
-					{
+#endif
+					if (difference >= m_PixelThreshold){
 						++changedPixels;
 						// Enough changed pixels to classify this cell as containing motion.
-						if (changedPixels >= requiredPixels)
-						{
+						if (changedPixels >= requiredPixels){
 							m_Motion[row * m_Columns + col] = 1;
 							break;
 						}
@@ -141,7 +211,7 @@ const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 	}
 
 	// Save current frame.
-	std::memcpy(m_PreviousFrame.data(), image.pData, static_cast<size_t>(image.LineSize) * static_cast<size_t>(image.Ht));
+	std::memcpy(m_PreviousFrame, image.pData, static_cast<size_t>(image.LineSize) * static_cast<size_t>(image.Ht));
 	return m_Motion.data();
 }
 
@@ -161,34 +231,46 @@ void CMotionDetector::Reset()
 	std::fill(m_Motion.begin(), m_Motion.end(), 0);
 }
 
-bool CMotionDetector::Run(MDIMAGE *pImg)
+bool CMotionDetector::Run(MDIMAGE *pImg, bool Refresh)
 {
-	const uint8_t* motion = Process(*pImg);
-	const int cellWidth  = pImg->Wd / m_Columns;
-	const int cellHeight = pImg->Ht / m_Rows;
+/*	for testing - display the shrunk image 
+	m_Shrunk.Process(pImg->pData);
+	m_Shrunk.DrawOutputOnBuffer(pImg);
+	return true;
+*/
 
-	for (int row = 0; row < m_Rows; ++row)
-	{
-		const int yStart = row * cellHeight;
+	// also if motion detect uses a greyscale calculation theres no point shrinking in colour.
+	// dont want to draw on the original bitmap, prefer to highlight the squares using the results structure
+
+	if (Refresh){
+		MDIMAGE mdi={0};
+		m_Shrunk.Process(pImg->pData);
+		mdi.Wd = m_Shrunk.GetOutputWidth();
+		mdi.LineSize = mdi.Wd * 3;
+		mdi.Ht = m_Shrunk.GetOutputHeight();
+		mdi.pData = m_Shrunk.GetOutput();
+		Process(mdi);
+	}
+
+	int cellWidth  = pImg->Wd / m_Columns;
+	int cellHeight = pImg->Ht / m_Rows;
+
+	for (int row = 0; row < m_Rows; ++row){
+		int yStart = row * cellHeight;
 		// Last row gets any remainder.
-		const int yEnd = (row == m_Rows - 1) ? pImg->Ht : yStart + cellHeight;
+		int yEnd = (row == m_Rows - 1) ? pImg->Ht : yStart + cellHeight;
 
-		for (int col = 0; col < m_Columns; ++col)
-		{
-			int motion_val = motion[(row*m_Columns) + col];
-
+		for (int col = 0; col < m_Columns; ++col){
+			int motion_val = m_Motion[(row*m_Columns) + col];
 			if (motion_val){
 
-				const int xStart = col * cellWidth;
+				int xStart = col * cellWidth;
 				// Last column gets any remainder.
-				const int xEnd = (col == m_Columns - 1) ? pImg->Wd : xStart + cellWidth;
+				int xEnd = (col == m_Columns - 1) ? pImg->Wd : xStart + cellWidth;
+				for (int y = yStart; y < yEnd; ++y){
 
-				for (int y = yStart; y < yEnd; ++y)
-				{
 					uint8_t* pixel = pImg->pData + y * pImg->LineSize + xStart * 3;
-
 					for (int x = xStart; x < xEnd; ++x){
-
 						*pixel = 255; // set one channel to 255
 						pixel += 3;
 					}
@@ -199,21 +281,6 @@ bool CMotionDetector::Run(MDIMAGE *pImg)
 	return true;
 }
 
-/***************************************************************
-todo - DONT SPEND LONG here.
-
-* try add some blur, how? dont want to blur the display bitmap, need another copy.
-   or chatGPT suggests, temporal smoothing. Ie, motion needed for more than one frame before its considered as motion.
-
-* motion detection should not be used on every frame.
- 
-* is the greyscale or colour test best in Process(..) ?
-
-* adjust/tune
- 	int    m_PixelThreshold  = 30;
-	double m_MotionThreshold = 10.0;
-
-****************************************************************/
 
 
 #ifdef sssssssssssssss

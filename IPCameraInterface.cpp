@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "IPCameraInterface.h"
 #include "utilities.h"
+#include <format>
 
 
 bool CMyBitmap::Create(CDC *pDC, int Wd, int Ht, int BitsPerPixel, bool TopDown)
@@ -88,7 +89,6 @@ bool CIPCameraManager::InitialiseSetup(const std::string& ConfigPath, HWND hWnd,
 	// field : display_enabled
 	m_DisplayEnabled = cfg.getBool("display_enabled");
 
-	InitGridLayout();
 	return (m_CamSetup.size() > 0);
 }
 
@@ -129,30 +129,41 @@ void CIPCameraManager::TerminateStreams()
 bool CIPCameraManager::CameraReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen)
 {
 	// GUI thread message handler.
-	int CameraIndex = (int)wParam;
-	return m_pCams[CameraIndex].CameraReadyMessageHandler(pScreen);
+	int CamIdx = (int)wParam;
+	if (CamIdx>=0 && CamIdx<(int)m_CamSetup.size()){
+		if (!m_pCams[CamIdx].CameraReadyMessageHandler(pScreen)){
+			// shutdown this camera object because camera failed to open.
+			m_pCams[CamIdx].Shutdown();
+			return false;
+		}
+	}
+	// (re)calculate the grid layout each time another camera comes online.
+	InitGridLayout();
+	return true;
 }
 
 void CIPCameraManager::FrameReadyMessageHandler(WPARAM wParam, LPARAM lParam, CDC *pScreen, int WindowCX, int WindowCY)
 {
 	// GUI thread message handler.
-	int NumCams = m_CamSetup.size();
-	int CamIdx  = (int)wParam;
-	int Code    = (int)lParam; // unused.
-	auto r = m_Grid.GetCellRect(WindowCX, WindowCY, CamIdx);
-	m_pCams[CamIdx].FrameReadyMessageHandler(pScreen, r.left, r.top, r.right-r.left, r.bottom-r.top);
+	int CamIdx = (int)wParam;
+	int Code   = (int)lParam; // unused.
+	if (CamIdx>=0 && CamIdx<(int)m_CamSetup.size()){
+		auto r = m_Grid.GetCellRect(WindowCX, WindowCY, CamIndexToGridCellIndex(CamIdx));
+		m_pCams[CamIdx].FrameReadyMessageHandler(pScreen, r.left, r.top, r.right-r.left, r.bottom-r.top);
+	}
 }
 
 int CIPCameraManager::DrawGridLayout(CDC *pScreen, int WindowCX, int WindowCY)
 {
-	int NumCams = m_CamSetup.size();
-	if (NumCams > 0){
-		for (int i=0; i<NumCams; i++){
+	if (m_NumOpenStreams > 0){
+		CGdiObject *pOld = pScreen->SelectStockObject(BLACK_BRUSH);
+		pScreen->Rectangle(0, 0, WindowCX, WindowCY);
+		pScreen->SelectStockObject(GRAY_BRUSH);
+		for (int i=0; i<m_NumOpenStreams; i++){
 			auto r = m_Grid.GetCellRect(WindowCX, WindowCY, i);
-			CGdiObject *pOld = pScreen->SelectStockObject(DKGRAY_BRUSH);
 			pScreen->Rectangle(r.left, r.top, r.right, r.bottom);
-			pScreen->SelectObject(pOld);
 		}
+		pScreen->SelectObject(pOld);
 		return 1;
 	}
 	return 0;
@@ -160,26 +171,43 @@ int CIPCameraManager::DrawGridLayout(CDC *pScreen, int WindowCX, int WindowCY)
 
 void CIPCameraManager::InitGridLayout()
 {
-	int Count = m_CamSetup.size();
-	if (Count > 0){
+	m_NumOpenStreams = 0;
+	for (int i=0; i<m_CamSetup.size(); i++)
+		if (m_pCams[i].m_VideoInfo.StreamOpen)
+			m_NumOpenStreams++;
+
+	if (m_NumOpenStreams > 0){
 		int Bdr = 5;
-		if (Count == 1)
+		if (m_NumOpenStreams == 1)
 			m_Grid.Initialse(1, 1, Bdr, Bdr);
-		else if (Count <= 3)
+		else if (m_NumOpenStreams <= 3)
 			// one row, up to 3 columns.
-			m_Grid.Initialse(1, Count, Bdr, Bdr);
+			m_Grid.Initialse(1, m_NumOpenStreams, Bdr, Bdr);
 		else {
 			// 2 or more rows. Window divided up with sqrt, ie, 9 cells = 3 row, 3 cols.
 			// This is rough and simple way of doing it, I need to consider window aspect ratio and video aspect ratio.
-			int rows = static_cast<int>(std::sqrt(Count));
-			int cols = (Count + rows - 1) / rows;   // ceiling division
+			int rows = static_cast<int>(std::sqrt(m_NumOpenStreams));
+			int cols = (m_NumOpenStreams + (rows - 1)) / rows;   // ceiling division
 			m_Grid.Initialse(rows, cols, Bdr, Bdr);
 		}	
 	}
 }
 
+int CIPCameraManager::CamIndexToGridCellIndex(int CamIdx)
+{
+	// Some cameras might have failed to open, (failed camera remain in m_pCams and m_CamSetup array), we don't want to draw an 
+	// empty grid cell for failed cameras, so the number of grid cells represents open/sucessful cameras.
+	int converted_idx = 0;
+	for (int i=0; i<CamIdx; i++)
+		if (m_pCams[i].m_VideoInfo.StreamOpen)
+			converted_idx++;
+	return converted_idx;
+}
+
 CIPCameraManager::CIPCameraManager()
 {
+	m_CamSetup.clear();
+	m_NumOpenStreams = 0;
 }
 
 CIPCameraManager::~CIPCameraManager()
@@ -199,6 +227,7 @@ bool CIPCameraInterface::Start(const IPCAMERASETUP& Setup)
 		m_CameraToProcessor.AssignBuffer(m_Frame, num_entries(m_Frame));
 		// to do - specify required image format (RGB 24, greyscale, ect).
 		m_CamThread.Start(m_Setup.Url, IMAGEFORMAT::IMGFMT_BGR24, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
+		return true;
 	}
 	return false;
 }
@@ -212,7 +241,7 @@ void CIPCameraInterface::Shutdown()
 
 void CIPCameraInterface::Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS)
 {
-	// Called in the camera thread and will post a message to the GUI thread. 
+	// Called in the camera thread (CCameraThread) and will post a message to the GUI thread. 
 	if (pParam){
 		CIPCameraInterface *ipc = (CIPCameraInterface*)pParam;
 		// SendMessage(...) - blocks execution until the receiving window (GUI thread) processes the message.
@@ -247,47 +276,47 @@ void CIPCameraInterface::Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS)
 bool CIPCameraInterface::CameraReadyMessageHandler(CDC *pScreen)
 {
 	// GUI thread message handler.
-	for (int i=0; i<num_entries(m_ProcessedFrame); i++){
-		PROCESSED_FRAME &PF = m_ProcessedFrame[i];
+	if (m_VideoInfo.StreamOpen){
+		for (int i=0; i<num_entries(m_ProcessedFrame); i++){
+			PROCESSED_FRAME &PF = m_ProcessedFrame[i];
 
-		// HARD CODED
-		// Desired image format (eg, RGB 24, greyscale, ect) should be specified at startup, and passed to img proc thread.
-		// Currently img proc thread just outputs at RGB24, hence hard coded below - LineSize = Wd * 3;
-		PF.Image.Wd       = m_VideoInfo.width;
-		PF.Image.Ht       = m_VideoInfo.height;
-		PF.Image.LineSize = PF.Image.Wd * 3;
-		PF.Image.Planes   = PF.Image.LineSize / PF.Image.Wd;
-		PF.Image.Padding  = PF.Image.LineSize - (PF.Image.Wd * PF.Image.Planes);
+			// TODO - HARD CODED - Desired image format (eg, RGB 24, greyscale, ect) should be specified at startup, and passed to img proc thread.
+			// Currently img proc thread just outputs at RGB24, hence hard coded below - LineSize = Wd * 3;
+			PF.Image.Wd       = m_VideoInfo.width;
+			PF.Image.Ht       = m_VideoInfo.height;
+			PF.Image.LineSize = PF.Image.Wd * 3;
+			PF.Image.Planes   = PF.Image.LineSize / PF.Image.Wd;
+			PF.Image.Padding  = PF.Image.LineSize - (PF.Image.Wd * PF.Image.Planes);
 
-		if (i < num_entries(m_GuiData)){
-			if (m_GuiData[i].Create(pScreen, PF.Image.Wd, PF.Image.Ht, 24, true)){
-				PF.pGuiData    = (void*)&m_GuiData[i];
-				PF.Image.pData = m_GuiData[i].m_pData;
+			if (i < num_entries(m_GuiData)){
+				if (m_GuiData[i].Create(pScreen, PF.Image.Wd, PF.Image.Ht, 24, true)){
+					PF.pGuiData    = (void*)&m_GuiData[i];
+					PF.Image.pData = m_GuiData[i].m_pData;
+				}
+			}
+			else {
+				// m_GuiData and m_ProcessedFrame are defined separately, but have the same array size as each m_ProcessedFrame element contains a m_GuiData. I could 
+				// instead allocate memory for PF.Image.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
+				::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
+				return false;
 			}
 		}
-		else {
-			// m_GuiData and m_ProcessedFrame are defined separately, but have the same array size as each m_ProcessedFrame element contains a m_GuiData. I could 
-			// instead allocate memory for PF.Image.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
-			::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
-			return  false;
-		}
+		// Now the camera has started we can start the image processing thread.
+		m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
+		m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this, m_Setup.MessageSubCode);
+		return true;
 	}
-	// Now the camera has started we can start the image processing thread.
-	m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
-	m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this, m_Setup.MessageSubCode);
-	return true;
+	return false;	// m_CamThread failed to open camera.
 }
 
-#define GET_X_SCALE(CellWd, VideoWd) ((VideoWd) > (CellWd)) ? (float)(CellWd)/(float)(VideoWd) : 1.0f;
+#define GET_VIDEO_SCALE(CellWd, VideoWd) ((VideoWd) > (CellWd)) ? (float)(CellWd)/(float)(VideoWd) : 1.0f;
 void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, int Cell_Left, int Cell_Top, int Cell_Wd, int Cell_Ht)
 {
-	// GUI thread frame ready message handler.
-	// Strictly for displaying the processed frame (and any associated data) in the GUI, not image processing etc - that is done in the image processing thread.
-	// Also this code here will be disabled/not-executed if the video display is disabled, so any processing here would be futile.
+	// GUI thread frame ready message handler. For displaying the processed frame (and any associated data) in the window.
 	PROCESSED_FRAME *pBuf = m_ProcessorToGui.AcquireRead();
 	if (pBuf){
-		if (pScreen){
-			// VERSION REQUIRING EXTRA COPY, as it uses an intermediate 'new' buffer rather than directly using a CreateDIBSection created buffer.
+		if (pScreen && Cell_Wd>40 && Cell_Ht>40){
+			// Un-used and less efficient version which requires intermediate malloc'ed bitmap buffer and an additional copy rather than CImageProcessingThread::CopyFrame writting direct to the CreateDIBSection created buffer.
 			// if (InitDisplayDC(pScreen, &m_Pic, pBuf->Wd, pBuf->Ht)){
 			//	 std::memcpy(m_Pic.pData, pBuf->pData, pBuf->Size);
 			//	 pScreen->BitBlt(0, 0, pBuf->Wd, pBuf->Ht, &m_Pic.DC, 0, 0, SRCCOPY);
@@ -297,17 +326,33 @@ void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, int Cell_Left, i
 				if (pMB->IsCreated()){
 					DrawImgProcOutput(&pMB->m_MemDC, &pBuf->ImgProcOut);
 
-					// @@@@@ TODO FIX - 
-					// below for scaling and fitting picture in cell we make assumption that width is greater than height.
-					float Scale = GET_X_SCALE(Cell_Wd, pBuf->Image.Wd);
-					if (Scale == 1.0f)
-						pScreen->BitBlt(Cell_Left, Cell_Top, pBuf->Image.Wd, pBuf->Image.Ht, &pMB->m_MemDC, 0, 0, SRCCOPY);
+					std::string info = std::format("FPS : {:.1f}", pBuf->CurrentFPS);
+					pMB->m_MemDC.SetBkMode(OPAQUE);
+					pMB->m_MemDC.TextOut(2, 2, Utf8(info.c_str()));
+
+					// Scale and position frame to fit the grid cell.
+					float Scale = GET_VIDEO_SCALE(Cell_Wd, pBuf->Image.Wd);
+					int Wd = (int)((float)pBuf->Image.Wd * Scale);
+					int Ht = (int)((float)pBuf->Image.Ht * Scale);
+					int Center_Y = 0, Center_X = 0;
+
+					if (Ht > Cell_Ht){
+						Scale = GET_VIDEO_SCALE(Cell_Ht, pBuf->Image.Ht);
+						Wd = (int)((float)pBuf->Image.Wd * Scale);
+						Ht = (int)((float)pBuf->Image.Ht * Scale);
+						Center_X = (Cell_Wd - Wd) / 2;
+					}
 					else {
-						int Wd = (int)((float)pBuf->Image.Wd * Scale);
-						int Ht = (int)((float)pBuf->Image.Ht * Scale);
-						int Center_Y = (Ht < Cell_Ht) ? ((Cell_Ht - Ht) / 2) : 0;
+						Center_Y = (Cell_Ht - Ht) / 2;
+						if (Wd < Cell_Wd)
+							Center_X = (Cell_Wd - Wd) / 2;
+					}
+
+					if (Scale == 1.0f)
+						pScreen->BitBlt(Cell_Left+Center_X, Cell_Top+Center_Y, pBuf->Image.Wd, pBuf->Image.Ht, &pMB->m_MemDC, 0, 0, SRCCOPY);
+					else {
 						pScreen->SetStretchBltMode(HALFTONE);
-						pScreen->StretchBlt(Cell_Left, Cell_Top+Center_Y, Wd, Ht, &pMB->m_MemDC, 0, 0, pBuf->Image.Wd, pBuf->Image.Ht, SRCCOPY);
+						pScreen->StretchBlt(Cell_Left+Center_X, Cell_Top+Center_Y, Wd, Ht, &pMB->m_MemDC, 0, 0, pBuf->Image.Wd, pBuf->Image.Ht, SRCCOPY);
 					}
 				}
 			}
@@ -346,18 +391,3 @@ void CIPCameraInterface::DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO)
 	//pCDC->PolyDraw(...);
 	pCDC->SelectObject(oldpen);
 }
-
-
-/*
-void CDisplay::TextOnDisplay(CDC *pDC, char *pText, COLORREF CR, int x, int y, int Size)
-{
-	pDC->SetBkMode(OPAQUE);//TRANSPARENT
-	COLORREF oldBkCol = pDC->SetBkColor(RGB(0,0,0));
-	CFont   *oldobj   = pDC->SelectObject((Size==0) ? &m_GdiObjs.Font_16 : &m_GdiObjs.Font_24);
-	COLORREF oldTxCol = pDC->SetTextColor(CR);
-	pDC->TextOut(x, y, pText);
-	pDC->SetBkColor(oldBkCol);
-	pDC->SelectObject(oldobj);
-	pDC->SetTextColor(oldTxCol);
-}
-*/

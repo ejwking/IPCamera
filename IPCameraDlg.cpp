@@ -15,6 +15,7 @@
 #define WM_APP_CAMERA_READY	(WM_APP + 1)
 #define WM_APP_FRAME_READY	(WM_APP + 2)
 
+#define BUTTON_ROW_AT_BOTTOM_SZ	40
 
 CIPCameraDlg::CIPCameraDlg(CWnd* pParent /*=nullptr*/) : CDialogEx(IDD_IPCAMERA_DIALOG, pParent)
 {
@@ -86,8 +87,7 @@ void CIPCameraDlg::OnPaint()
 		if (m_pDC == nullptr)
 			m_pDC = this->GetDC();
 
-		CRect rect;
-		GetClientRect(&rect);
+		CRect rect = GetCameraDisplayArea();
 		m_CamManager.DrawGridLayout(m_pDC, rect.Width(), rect.Height());
 	}
 }
@@ -98,11 +98,18 @@ HCURSOR CIPCameraDlg::OnQueryDragIcon()
 	return static_cast<HCURSOR>(m_hIcon);
 }
 
+CRect CIPCameraDlg::GetCameraDisplayArea()
+{
+	CRect rect;
+	GetClientRect(&rect);
+	rect.bottom = rect.bottom - BUTTON_ROW_AT_BOTTOM_SZ;
+	return rect;
+}
+
 LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 {
 	// WM_APP_FRAME_READY message handler.
-	CRect rect;
-	GetClientRect(&rect);
+	CRect rect = GetCameraDisplayArea();
 	m_CamManager.FrameReadyMessageHandler(wParam, lParam, m_pDC, rect.Width(), rect.Height());
 	return 0;
 }
@@ -110,8 +117,18 @@ LRESULT CIPCameraDlg::OnFrameReady(WPARAM wParam, LPARAM lParam)
 LRESULT CIPCameraDlg::OnCameraReady(WPARAM wParam, LPARAM lParam)
 {
 	// WM_APP_CAMERA_READY message handler.
-	m_CamManager.CameraReadyMessageHandler(wParam, lParam, m_pDC);
+	if (m_CamManager.CameraReadyMessageHandler(wParam, lParam, m_pDC)){
+		CRect rect = GetCameraDisplayArea();
+		m_CamManager.DrawGridLayout(m_pDC, rect.Width(), rect.Height());
+	}
 	return 0;
+}
+
+void CIPCameraDlg::OnSize(UINT nType, int cx, int cy)
+{
+	CDialogEx::OnSize(nType,cx,cy);
+	// TODO: Add your message handler code here
+	Invalidate();
 }
 
 void CIPCameraDlg::OnBnClickedBtnConnect()
@@ -119,25 +136,8 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 	m_CamManager.InitialiseSetup("C:\\EKING\\Projects\\C++\\IPCamera\\my notes\\config.txt", m_hWnd, WM_APP_CAMERA_READY, WM_APP_FRAME_READY);
 	m_CamManager.StartStreams();
 
-	CRect rect;
-	GetClientRect(&rect);
-	m_CamManager.DrawGridLayout(m_pDC, rect.Width(), rect.Height());
-
 	// to do,
 	// a disconnect button so i can connect/disconnect in the window.
-
-	//
-	// Proper error handling, 
+	// improved error logging 
 	// remove TRACE and MessageBox
-	//
-	// warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
-	// ........unusually from std::vector Size().
-}
-
-
-void CIPCameraDlg::OnSize(UINT nType, int cx, int cy)
-{
-	CDialogEx::OnSize(nType,cx,cy);
-	// TODO: Add your message handler code here
-	Invalidate();
 }

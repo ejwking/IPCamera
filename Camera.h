@@ -46,6 +46,8 @@ public:
 	bool Convert(const CFrame& source, CFrame& destination, bool BGR=false);
 
 private:
+//	std::vector<std::string> m_Errors;	todo add error reporting
+
 	class Impl;
 	std::unique_ptr<Impl> m_Impl;
 };
@@ -53,10 +55,18 @@ private:
 
 struct VIDEO_INFO
 {
+	bool StreamOpen = false;
 	std::string codecName;
 	int width = 0, height = 0;
 	int codec_id = 0;
 	double fps = 0.0;
+	void Reset(){
+		codecName.clear();
+		StreamOpen = false;
+		width = 0; height = 0;
+		codec_id = 0;
+		fps = 0.0;
+	}
 };
 
 
@@ -72,11 +82,13 @@ public:
 
 	bool Open(const std::string& url);
 	void Close();
-	void GetVideoInfo();
 	bool Grab();
 	const CFrame& CurrentFrame() const;
 
 private:
+//	std::vector<std::string> m_Errors;	todo add error reporting
+
+	void GetVideoInfo();
 	// The PImpl Idiom (Pointer to IMPLementation) is a technique used for separating implementation from the interface. It minimizes header exposure.
 	// It is a good technique for projects where you want to hide implementation details and reduce compilation dependencies.
 	class Impl; // forward declaration
@@ -86,13 +98,13 @@ private:
 };
 
 
-// SPSCRingBuffer implements a SPSC (Single-Producer Single-Consumer) ring buffer. Because it strictly involves exactly one writer and one reader, it eliminates 
+// CRingBuffer implements a SPSC (Single-Producer Single-Consumer) ring buffer. Because it strictly involves exactly one writer and one reader, it eliminates 
 // the need for expensive mutex locks, making it wait-free and optimised for real-time systems. The buffers are not protected by a lock, instead, ownership of
 // the buffer is being transferred between the two threads. m_Num is a convenient single synchronisation variable because it represents the ownership transfer:
 // 
 // Producer:  Frame written  ->  Advance head, NumFrames++  ->  Consumer can read
 // Consumer:  Frame read     ->  Advance tail, NumFrames--  ->  Producer can reuse
-template <typename Ty> class SPSCRingBuffer
+template <typename Ty> class CRingBuffer
 {
 private:
 	Ty *m_pBuf = nullptr;
@@ -146,34 +158,6 @@ public:
 	}
 };
 
-struct XY_POINT
-{
-	int x, y;
-};
-
-struct IMG_PROC_OUTPUT
-{
-	XY_POINT Pt[4];
-	// ...
-};
-
-struct IMAGE_BUF
-{
-	// pData - this is the image buffer CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame) will write to. 
-	// CImageProcessingThread is not responsible for this memory. It is up to the calling-thread/GUI code to allocate 
-	// it at start up, which it might do using the win32 GDI functions, or just simply malloc/new.
-	uint8_t	*pData=nullptr;
-	int      Wd=0, Ht=0;
-	int      Planes=0, LineSize=0, Padding=0;
-};
-
-struct PROCESSED_FRAME
-{
-	void           *pGuiData=nullptr;	// pointer the real bitmap (see class CMyBitmap) managed by the GDI functions.
-	IMAGE_BUF       Image;				// contains pointer to the raw bitmap bytes.
-	IMG_PROC_OUTPUT ImgProcOut;			// data output from image processing.
-};
-
 enum class IMAGEFORMAT
 {
 	IMGFMT_RGB24 = 0,
@@ -190,15 +174,17 @@ public:
 	CCameraThread(){}
 	~CCameraThread(){ Terminate(); }
 	// TO DO - caller needs to specify the required image format, eg, RGB 24bit, or greyscale 8bit.
-	void Start(const std::string& url, IMAGEFORMAT Output, SPSCRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam);
+	void Start(const std::string& url, IMAGEFORMAT Output, CRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam);
 	void Terminate();
+	const std::vector<std::string>& GetErrorLog() const { return m_ErrorLog; }
 
 private:
-	SPSCRingBuffer<CFrame> *m_pRingBuf=nullptr;
+	std::vector<std::string> m_ErrorLog;
+	CRingBuffer<CFrame> *m_pRingBuf=nullptr;
 
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
-	std::string       m_ErrorLog, m_CamURL;
+	std::string       m_CamURL;
 	void             *m_pCallbackParam;
 	IMAGEFORMAT       m_OutputFormat;
 	CImageConverter   m_Converter;
@@ -208,6 +194,92 @@ private:
 	void (*m_CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS) = nullptr;
 };
 
+
+class CFpsCounter
+{
+public:
+	/* A nice thing about steady_clock, you don't have to worry about the units. You could measure something like:
+	auto start = std::chrono::steady_clock::now();
+	// do something
+	auto elapsed = std::chrono::steady_clock::now() - start;
+	and then explicitly ask for milliseconds:
+	auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();  */
+	void Init(size_t frameCount)
+	{
+		Reset();
+		m_Timestamps.resize(frameCount);
+		m_Initialized = true;
+	}
+	void Reset()
+	{
+		m_Index = 0;
+		m_NumFrames = 0;
+		m_FPS = 0.0;
+		m_Initialized = false;
+	}
+	void Frame()
+	{
+		if (m_Initialized){
+			const auto now = std::chrono::steady_clock::now();
+			m_Timestamps[m_Index] = now;
+			m_Index = (m_Index + 1) % m_Timestamps.size();
+
+			if (m_NumFrames < m_Timestamps.size())
+				++m_NumFrames;
+			else {
+				// only start calculating FPS after we have enough frames to fill the buffer, otherwise the FPS will be inaccurate.
+				const size_t oldestIndex = (m_Index % m_Timestamps.size());
+				const double seconds = std::chrono::duration<double>(now - m_Timestamps[oldestIndex]).count();
+				if (seconds > 0.0)
+					m_FPS = static_cast<double>(m_NumFrames - 1) / seconds;
+			}
+		}
+	}
+	double GetFPS() const
+	{
+		return m_FPS;
+	}
+
+private:
+	std::vector<std::chrono::steady_clock::time_point> m_Timestamps; // circular buffer of timestamps for rolling average calculation.
+	size_t m_Index = 0;
+	size_t m_NumFrames = 0;
+	double m_FPS = 0.0;
+	bool   m_Initialized = false;
+};
+
+
+struct XY_POINT
+{
+	int x, y;
+};
+
+struct IMG_PROC_OUTPUT
+{
+//	std::vector<XY_POINT> Points;
+	XY_POINT Pt[4];
+	// ...
+};
+
+struct IMAGE_BUF
+{
+	// pData - this is the image buffer CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame) will write to. 
+	// CImageProcessingThread is not responsible for this memory. It is up to the calling-thread/GUI code to allocate 
+	// it at start up, which it might do using the win32 GDI functions, or just simply malloc/new.
+	uint8_t	*pData;
+	int      Wd, Ht;
+	int      Planes, LineSize, Padding;
+};
+
+struct PROCESSED_FRAME
+{
+	void           *pGuiData=nullptr;	// pointer the real bitmap (see class CMyBitmap) managed by the GDI functions.
+	IMAGE_BUF       Image={0};			// contains pointer to the raw bitmap bytes.
+	IMG_PROC_OUTPUT ImgProcOut={0};		// data output from image processing.
+	double          CurrentFPS=0.0;
+};
+
+
 #define FRAME_READY_CALLBACK_PARAMS int Code, void *pParam
 
 class CImageProcessingThread
@@ -215,20 +287,24 @@ class CImageProcessingThread
 public:
 	CImageProcessingThread(){}
 	~CImageProcessingThread(){ Terminate(); }
-	void Start(SPSCRingBuffer<CFrame> *pInputRingBuffer, SPSCRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex);
+	void Start(CRingBuffer<CFrame> *pInputRingBuffer, CRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex);
 	void Terminate();
+	const std::vector<std::string>& GetErrorLog() const { return m_ErrorLog; }
 
 private:
-	SPSCRingBuffer<CFrame>          *m_pInputRingBuf=nullptr;
-	SPSCRingBuffer<PROCESSED_FRAME> *m_pOutputRingBuf=nullptr;
+	CRingBuffer<CFrame>          *m_pInputRingBuf=nullptr;
+	CRingBuffer<PROCESSED_FRAME> *m_pOutputRingBuf=nullptr;
 
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
-	std::string       m_ErrorLog;
 	void             *m_pCallbackParam;
 	int               m_ThreadIndex;
 	bool              m_InitImageProcessing;
 	CMotionDetector   m_MotionDetector;
+	CFpsCounter       m_FpsCounter;
+	
+	std::vector<std::string> m_ErrorLog;
+	std::chrono::steady_clock::time_point m_Timer;
 
 	void Run();
 	bool CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest);
@@ -246,7 +322,6 @@ private:
 //
 // Option to have the display on or off, if off then image processing should run in background.
 //
-// Statistics for frame rate, frames dropped, etc. for both camera thread and image processing thread, and GUI display.
 /*
 auto currentTime = std::chrono::high_resolution_clock::now();
 double elapsed = std::chrono::duration<double>(currentTime - prevTime).count();
