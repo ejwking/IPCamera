@@ -47,7 +47,6 @@ public:
 
 private:
 //	std::vector<std::string> m_Errors;	todo add error reporting
-
 	class Impl;
 	std::unique_ptr<Impl> m_Impl;
 };
@@ -80,7 +79,7 @@ public:
 	CCamera(const CCamera&) = delete;
 	CCamera& operator=(const CCamera&) = delete;
 
-	bool Open(const std::string& url);
+	bool Open(const std::string& url, bool& isRtsp);
 	void Close();
 	bool Grab();
 	const CFrame& CurrentFrame() const;
@@ -120,7 +119,7 @@ public:
 	}
 	bool InitRing()
 	{
-		if (m_pBuf){
+		if (m_pBuf && m_Max>0){
 			m_HeadIndex = 0;	// Head = next index the producer will write.
 			m_TailIndex = 0;	// Tail = next index the consumer will read.
 			m_Num.store(0, std::memory_order_relaxed);	// m_Num = number of completed entries currently in the buffer.
@@ -172,26 +171,28 @@ class CCameraThread
 {
 public:
 	CCameraThread(){}
-	~CCameraThread(){ Terminate(); }
-	// TO DO - caller needs to specify the required image format, eg, RGB 24bit, or greyscale 8bit.
-	void Start(const std::string& url, IMAGEFORMAT Output, CRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam);
-	void Terminate();
+	~CCameraThread(){ TerminateThread(); }
+
+	void StartThread(const std::string& url, IMAGEFORMAT Output, CRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam);
+	void TerminateThread();
 	const std::vector<std::string>& GetErrorLog() const { return m_ErrorLog; }
+	std::thread::id GetThreadId() const { return m_Thread.get_id(); }
 
 private:
 	std::vector<std::string> m_ErrorLog;
-	CRingBuffer<CFrame> *m_pRingBuf=nullptr;
+	CRingBuffer<CFrame> *m_pRingBuf;
 
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
 	std::string       m_CamURL;
-	void             *m_pCallbackParam;
 	IMAGEFORMAT       m_OutputFormat;
 	CImageConverter   m_Converter;
 
 	void Run();
 	bool WriteNextFrame(const CFrame& frame);
+
 	void (*m_CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS) = nullptr;
+	void *m_pCallbackParam = nullptr;
 };
 
 
@@ -254,11 +255,11 @@ struct XY_POINT
 	int x, y;
 };
 
-struct IMG_PROC_OUTPUT
+struct PROCESSING_RESULTS
 {
 //	std::vector<XY_POINT> Points;
 	XY_POINT Pt[4];
-	// ...
+	bool MotionDetected;
 };
 
 struct IMAGE_BUF
@@ -273,10 +274,10 @@ struct IMAGE_BUF
 
 struct PROCESSED_FRAME
 {
-	void           *pGuiData=nullptr;	// pointer the real bitmap (see class CMyBitmap) managed by the GDI functions.
-	IMAGE_BUF       Image={0};			// contains pointer to the raw bitmap bytes.
-	IMG_PROC_OUTPUT ImgProcOut={0};		// data output from image processing.
-	double          CurrentFPS=0.0;
+	void              *pGuiData=nullptr;	// pointer the real bitmap (see class CMyBitmap) managed by the GDI functions.
+	IMAGE_BUF          Image={0};			// contains pointer to the raw bitmap bytes.
+	PROCESSING_RESULTS PResults={0};		// data output from image processing.
+	double             CurrentFPS=0.0;
 };
 
 
@@ -286,10 +287,12 @@ class CImageProcessingThread
 {
 public:
 	CImageProcessingThread(){}
-	~CImageProcessingThread(){ Terminate(); }
-	void Start(CRingBuffer<CFrame> *pInputRingBuffer, CRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex);
-	void Terminate();
+	~CImageProcessingThread(){ TerminateThread(); }
+
+	void StartThread(CRingBuffer<CFrame> *pInputRingBuffer, CRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam);
+	void TerminateThread();
 	const std::vector<std::string>& GetErrorLog() const { return m_ErrorLog; }
+	std::thread::id GetThreadId() const { return m_Thread.get_id(); }
 
 private:
 	CRingBuffer<CFrame>          *m_pInputRingBuf=nullptr;
@@ -297,8 +300,6 @@ private:
 
 	std::thread       m_Thread;
 	std::atomic<bool> m_StopRequested{false};
-	void             *m_pCallbackParam;
-	int               m_ThreadIndex;
 	bool              m_InitImageProcessing;
 	CMotionDetector   m_MotionDetector;
 	CFpsCounter       m_FpsCounter;
@@ -307,21 +308,15 @@ private:
 	std::chrono::steady_clock::time_point m_Timer;
 
 	void Run();
-	bool CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest);
+	bool CopyFrame(const CFrame *pSource, PROCESSED_FRAME *pDest);
 	bool ImageProcessing(PROCESSED_FRAME *pFrame);
-	bool WriteNextFrame(CFrame *pRgbFrame);
+	bool WriteNextFrame(const CFrame *pRgbFrame);
+
 	void (*m_FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS) = nullptr;		// [in producer] - post a message from producer to consumer to say a new frame is ready.
+	void *m_pCallbackParam = nullptr;
 };
 
 
-// TO DO - 
-// 
-// @@@@@ inconsistant use of 'const' @@@@@ put it in member functions,  (WriteNextFrame for example)
-// 
-// inconsistant use of references, I'm using pointers in places where references would be better practice.
-//
-// Option to have the display on or off, if off then image processing should run in background.
-//
 /*
 auto currentTime = std::chrono::high_resolution_clock::now();
 double elapsed = std::chrono::duration<double>(currentTime - prevTime).count();

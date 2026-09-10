@@ -35,7 +35,13 @@ struct IPCAMERASETUP
 	std::string Url;
 	HWND hWnd;
 	uint32_t CameraReadyMsg, FrameReadyMsg;
-	uint32_t MessageSubCode;
+	uint32_t MessageSubCode;	// camera/stream index.
+	//
+	IMAGEFORMAT ImgFormat = IMAGEFORMAT::IMGFMT_BGR24;
+	// 
+	// to do.
+	// settings for motion detection, motion recording, and all the other stuff we might do.
+	// ...
 };
 
 
@@ -56,10 +62,11 @@ private:
 	IPCAMERASETUP m_Setup;
 
 	// camera thread data..
-	CFrame              m_Frame[RING_BUF_SLOTS];
-	CRingBuffer<CFrame> m_CameraToProcessor;
-	CCameraThread       m_CamThread;
-	
+	CFrame              m_Frame[RING_BUF_SLOTS];// 1. the data[].
+	CRingBuffer<CFrame> m_CameraToProcessor;	// 2. ring buffer serving out the data[].
+	CCameraThread       m_CamThread;			// 3. thread/loop writing the data[] via the ring buffer. 
+												// And system is initialised in Start(..). Simple but I'm wondering if designed could be contained, todo - wrap this up in a little class.
+
 	// image processing thread data..
 	PROCESSED_FRAME              m_ProcessedFrame[RING_BUF_SLOTS];
 	CMyBitmap                    m_GuiData[num_entries(m_ProcessedFrame)];
@@ -68,7 +75,7 @@ private:
 
 	static void Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS);
 	static void Static_FrameReadyCallback(FRAME_READY_CALLBACK_PARAMS);
-	void DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO);
+	void DrawProcessingResults(CDC *pCDC, const PROCESSING_RESULTS &IPO);
 };
 
 
@@ -149,3 +156,9 @@ public:
 	int  DrawGridLayout(CDC *pScreen, int WindowCX, int WindowCY);
 };
 
+
+// TO DO - 
+// 
+// using pointers in places where references would be better practice. (eg, CameraReadyMessageHandler and FrameReadyMessageHandler)
+//
+// Option to have the display on or off, if off then image processing should run in background.

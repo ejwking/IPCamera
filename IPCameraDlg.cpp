@@ -51,7 +51,12 @@ BOOL CIPCameraDlg::OnInitDialog()
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
 	// TODO: Add extra initialization here
-	// ...
+#ifdef _DEBUG
+	SetWindowText(_T("IPCamera - v1.0 debug"));
+#else
+	SetWindowText(_T("IPCamera - v1.0"));
+#endif
+
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
 
@@ -137,7 +142,9 @@ void CIPCameraDlg::OnBnClickedBtnConnect()
 	m_CamManager.StartStreams();
 
 	// to do,
+	// check local directory for the config.txt ?
 	// a disconnect button so i can connect/disconnect in the window.
-	// improved error logging 
+	// finish error logging , almost every where i'm just returning false without logging the error.
 	// remove TRACE and MessageBox
+	// see the todo's everywhere.
 }

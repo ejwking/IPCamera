@@ -157,7 +157,7 @@ public:
 	AVFrame* m_frame = nullptr;
 	int m_videoStream = -1;
 	CFrame m_currentFrame;
-
+	bool m_isRtsp;
 	// hide the implementation methods, not just data. Otherwise even though it could be private in CCamera, this helper function would be in the public interface of CCamera.
 	// CCamera class should remain clean and focused on its public interface.
 	bool Open(const std::string & url);
@@ -207,8 +207,8 @@ void CCamera::GetVideoInfo()
 bool CCamera::Impl::Open(const std::string& url)
 {
 	AVDictionary* options = nullptr;
-	bool isRtsp = (url.rfind("rtsp://", 0) == 0);
-	if (isRtsp){
+	m_isRtsp = (url.rfind("rtsp://", 0) == 0);
+	if (m_isRtsp){
 		// Use TCP instead of UDP. RTSP can transport video over UDP (lower latency) or TCP (more reliable). For cameras on a home network, I recommend TCP.
 		av_dict_set(&options, "rtsp_transport", "tcp", 0);
 		// If the camera is unplugged, I don't want Open() to hang for a long time. (5,000,000 microseconds = 5 seconds).
@@ -277,7 +277,7 @@ bool CCamera::Impl::Open(const std::string& url)
 	return true;
 }
 
-bool CCamera::Open(const std::string& url)
+bool CCamera::Open(const std::string& url, bool& isRtsp)
 {
 	m_VideoInfo.Reset();
 	if (m_Impl->m_videoStream == -1){
@@ -286,6 +286,7 @@ bool CCamera::Open(const std::string& url)
 			return false;
 		}
 		GetVideoInfo();
+		isRtsp = m_Impl->m_isRtsp;
 	}
 	// When Open() returns true, the camera (or file) is completely ready to decode.
 	return true;
@@ -388,9 +389,9 @@ bool CCameraThread::WriteNextFrame(const CFrame& frame)
 void CCameraThread::Run()
 {
 	// To do - proper error reporting for when thread exits unexpectedly.
-	bool Ok = true;
+	bool Ok = true, isRtsp;
 	CCamera Cam;
-	if (!Cam.Open(m_CamURL)){
+	if (!Cam.Open(m_CamURL, isRtsp)){
 		m_ErrorLog.push_back("Camera open failed");
 		Ok = false;
 	}
@@ -400,18 +401,28 @@ void CCameraThread::Run()
 		Ok = false;
 	}
 
-	// Call the callback whether Cam.Open(..) suceeds or fails, because parent thread needs to know either way.
+	// Call the callback whether Cam.Open(..) suceeds or fails because parent thread needs to know either way.
 	if (m_CameraReadyCallback)
 		m_CameraReadyCallback(Cam.m_VideoInfo, m_pCallbackParam);
 
 	if (Ok){
 		// Open succeeded, now we can grab frames.
+		int sleep_ms = 0;
+		if (!isRtsp)
+			sleep_ms = (int)((1.0 / Cam.m_VideoInfo.fps) * 1000.0);
+
 		while (!m_StopRequested.load(std::memory_order_relaxed) && Ok){
 			// Grab will naturally block waiting for the next frame.
 			if (Cam.Grab()){
 				const CFrame& frame = Cam.CurrentFrame();
 				if (!WriteNextFrame(frame))
 					Ok = false;
+
+				if (!isRtsp){
+					// This project is primarily intended for IP cameras (rtsp streams), however it will also stream mp4, m4v files etc. Such files need the frame rate regulated otherwise they will run as fast as possible.
+					// There is no point adding timestamp handling, PTS calculations, clock synchronisation etc just to make a MP4 test file play at the correct speed. So instead do the simple approach, sleep..
+					std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+				}
 			}
 			else {
 				// Lost stream?
@@ -424,7 +435,7 @@ void CCameraThread::Run()
 	}
 }
 
-void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, CRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam)
+void CCameraThread::StartThread(const std::string &url, IMAGEFORMAT Output, CRingBuffer<CFrame> *pRingBuffer, void (*CameraReadyCallback)(CAMERA_READY_CALLBACK_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_ErrorLog.clear();
@@ -438,7 +449,7 @@ void CCameraThread::Start(const std::string &url, IMAGEFORMAT Output, CRingBuffe
 	}
 }
 
-void CCameraThread::Terminate()
+void CCameraThread::TerminateThread()
 {
 	if (m_Thread.joinable()){
 		m_StopRequested.store(true, std::memory_order_relaxed);
@@ -448,7 +459,7 @@ void CCameraThread::Terminate()
 
 //####################################################################################################################################
 
-bool CImageProcessingThread::CopyFrame(CFrame *pSource, PROCESSED_FRAME *pDest)
+bool CImageProcessingThread::CopyFrame(const CFrame *pSource, PROCESSED_FRAME *pDest)
 {
 	if (pDest->Image.pData){
 		if (pDest->Image.Wd!=pSource->Width() || pDest->Image.Ht!=pSource->Height() || pDest->Image.LineSize!=pSource->LineSize()){
@@ -504,16 +515,18 @@ bool CImageProcessingThread::ImageProcessing(PROCESSED_FRAME *pFrame)
 	// 1. very slow moving object more likely to trigger motion detection.
 	// 2. very fast moving object, more likely to miss it altogether.
 	// 
-	// @@@@ I've disabled motionInterval, motion detection is done on every frame, and when running 2 cameras cpu usage is only 3%.
-	if (!m_MotionDetector.Run(&img, DoMotionDetection)){
+	// @@@@ I've disabled motionInterval, motion detection is done on every frame, and when running 2 cameras cpu usage is only 3% (and in debug!).
+	bool Motion;
+	if (!m_MotionDetector.Run(&img, DoMotionDetection, Motion)){
 		m_ErrorLog.push_back("error - image processing");
 		return false;
 	}
-	// todo - save image processing result to pFrame->ImgProcOut or maybe pass this structure to m_MotionDetector.Run
+	// todo - save image processing result to pFrame->PResults or maybe pass this structure to m_MotionDetector.Run
+	pFrame->PResults.MotionDetected = Motion;
 	return true;
 }
 
-bool CImageProcessingThread::WriteNextFrame(CFrame *pRgbFrame)
+bool CImageProcessingThread::WriteNextFrame(const CFrame *pRgbFrame)
 {
 	bool Ok = true;
 	PROCESSED_FRAME *pBuf = m_pOutputRingBuf->AcquireWrite();
@@ -571,7 +584,7 @@ void CImageProcessingThread::Run()
 	}
 }
 
-void CImageProcessingThread::Terminate()
+void CImageProcessingThread::TerminateThread()
 {
 	if (m_Thread.joinable()){
 		m_StopRequested.store(true, std::memory_order_relaxed);
@@ -579,14 +592,13 @@ void CImageProcessingThread::Terminate()
 	}
 }
 
-void CImageProcessingThread::Start(CRingBuffer<CFrame> *pInputRingBuffer, CRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam, int ThreadIndex)
+void CImageProcessingThread::StartThread(CRingBuffer<CFrame> *pInputRingBuffer, CRingBuffer<PROCESSED_FRAME> *pOutputRingBuffer, void (*FrameReadyCallback)(FRAME_READY_CALLBACK_PARAMS), void *pCallbackParam)
 {
 	if (!m_Thread.joinable()){
 		m_pInputRingBuf      = pInputRingBuffer;
 		m_pOutputRingBuf     = pOutputRingBuffer;
 		m_FrameReadyCallback = FrameReadyCallback;
 		m_pCallbackParam     = pCallbackParam;
-		m_ThreadIndex        = ThreadIndex;	// not using.
 		m_ErrorLog.clear();
 		m_StopRequested.store(false, std::memory_order_relaxed);
 		m_Thread = std::thread(&CImageProcessingThread::Run, this);

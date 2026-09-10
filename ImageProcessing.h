@@ -50,7 +50,7 @@ public:
 
 	// verticalSample and horizontalSample, eg: 1 = process every line, 2 = every second line, 3 = every third line, etc.
 	void Initialise(const MDIMAGE& image, int rows, int columns, int BitmapReductionFactor, int verticalSample = 1, int horizontalSample = 1);
-	bool Run(MDIMAGE *pImg, bool Refresh);
+	bool Run(MDIMAGE *pImg, bool Refresh, bool &Motion);
 	int GetRows() const
 	{
 		return m_Rows;
@@ -77,8 +77,9 @@ private:
 	int m_PreviousWd = 0, m_PreviousHt = 0, m_PreviousLineSize = 0;
 	bool m_HavePreviousFrame = false;
 
-	int    m_PixelThreshold  = 30;
-	double m_MotionThreshold = 35.0; // also linked to grid cell size, because if the cell is larger it will be harder to meet the threshold with the movement of small objects.
+	int    m_AllChanThreshold    = 60; // r + g + b
+	int    m_SingleChanThreshold = 30; // r || g || b
+	double m_MotionThreshold     = 30.0; // also linked to grid cell size, because if the cell is larger it will be harder to meet the threshold with the movement of small objects.
 
 	CBitmapShrinker m_Shrunk;
 

@@ -100,9 +100,14 @@ void CMotionDetector::Initialise(const MDIMAGE& image, int rows, int columns, in
 	m_HavePreviousFrame = false;
 
 	m_Shrunk.Initialise(image.Wd, image.Ht, BitmapReductionFactor);
+
+	if (m_AllChanThreshold >= (m_SingleChanThreshold*3)){
+		// m_AllChanThreshold should be less than m_SingleChanThreshold * 3 otherwise it wouldnt do anything.
+		// error.
+		::AfxMessageBox(_T("m_AllChanThreshold"));
+	}
 }
 
-//#define USE_GREYSCALE_CALCULATION
 const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 {
 	// Basic validation
@@ -176,22 +181,23 @@ const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 				// Sample pixels horizontally
 				for (int x = xStart; x < xEnd; x += m_HorizontalSample){
 
-#ifdef USE_GREYSCALE_CALCULATION
-					// RGB24 -> simple brightness value.
-					int currentGray  = (current[0] + current[1] + current[2]) / 3;
-					int previousGray = (previous[0] + previous[1] + previous[2]) / 3;
-					int difference   = std::abs(currentGray - previousGray);
-#else
 					int dr = std::abs(current[0] - previous[0]);
 					int dg = std::abs(current[1] - previous[1]);
 					int db = std::abs(current[2] - previous[2]);
 
 					// Use the largest RGB difference.
-					//int difference = std::max({ dr, dg, db });
-					int difference = std::max(dr, dg);
-					difference = std::max(difference, db);
-#endif
-					if (difference >= m_PixelThreshold){
+					int SingleChanMaxDifference = std::max({ dr, dg, db });	// std::max has an overload that accepts an std::initializer_list<T> and returns the largest element.
+
+					bool change = (SingleChanMaxDifference >= m_SingleChanThreshold);
+
+					if (!change){
+						int currentTotal  = current[0]  + current[1]  + current[2];
+						int previousTotal = previous[0] + previous[1] + previous[2];
+						if (std::abs(currentTotal-previousTotal) >= m_AllChanThreshold)
+							change = true;
+					}
+
+					if (change){
 						++changedPixels;
 						// Enough changed pixels to classify this cell as containing motion.
 						if (changedPixels >= requiredPixels){
@@ -217,7 +223,7 @@ const uint8_t* CMotionDetector::Process(const MDIMAGE& image)
 
 void CMotionDetector::SetPixelThreshold(int threshold)
 {
-	m_PixelThreshold = std::clamp(threshold, 0, 255);
+	m_SingleChanThreshold = std::clamp(threshold, 0, 255);
 }
 
 void CMotionDetector::SetMotionThreshold(double percent)
@@ -231,7 +237,7 @@ void CMotionDetector::Reset()
 	std::fill(m_Motion.begin(), m_Motion.end(), 0);
 }
 
-bool CMotionDetector::Run(MDIMAGE *pImg, bool Refresh)
+bool CMotionDetector::Run(MDIMAGE *pImg, bool Refresh, bool &Motion)
 {
 /*	for testing - display the shrunk image 
 	m_Shrunk.Process(pImg->pData);
@@ -240,7 +246,9 @@ bool CMotionDetector::Run(MDIMAGE *pImg, bool Refresh)
 */
 
 	// also if motion detect uses a greyscale calculation theres no point shrinking in colour.
-	// dont want to draw on the original bitmap, prefer to highlight the squares using the results structure
+	// 
+	// AT NIGHTTIME, theres virtually no colour in the image, so the greyscale calculation would make more sense, and probably work better too.
+	//   and in this case the m_Shrunk bitmap should be 8 bit, one channel.
 
 	if (Refresh){
 		MDIMAGE mdi={0};
@@ -252,6 +260,7 @@ bool CMotionDetector::Run(MDIMAGE *pImg, bool Refresh)
 		Process(mdi);
 	}
 
+	Motion = false;
 	int cellWidth  = pImg->Wd / m_Columns;
 	int cellHeight = pImg->Ht / m_Rows;
 
@@ -263,7 +272,7 @@ bool CMotionDetector::Run(MDIMAGE *pImg, bool Refresh)
 		for (int col = 0; col < m_Columns; ++col){
 			int motion_val = m_Motion[(row*m_Columns) + col];
 			if (motion_val){
-
+				Motion = true;
 				int xStart = col * cellWidth;
 				// Last column gets any remainder.
 				int xEnd = (col == m_Columns - 1) ? pImg->Wd : xStart + cellWidth;
@@ -310,8 +319,8 @@ bool Image_Processing(PROCESSED_FRAME *pPF, int ThreadIndex)
 	if ((x%50) == 0){
 		// testing
 		for (int i=0; i<4; i++){
-			pPF->ImgProcOut.Pt[i].x = (rand()*pPF->Wd) / RAND_MAX;
-			pPF->ImgProcOut.Pt[i].y = (rand()*pPF->Ht) / RAND_MAX;
+			pPF->PResults.Pt[i].x = (rand()*pPF->Wd) / RAND_MAX;
+			pPF->PResults.Pt[i].y = (rand()*pPF->Ht) / RAND_MAX;
 		}
 	}
 	x++;*/

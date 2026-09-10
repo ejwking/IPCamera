@@ -223,10 +223,11 @@ bool CIPCameraInterface::Start(const IPCAMERASETUP& Setup)
 	// called in the GUI thread.
 	if (m_Init == 0){
 		m_Init = 1;
-		m_Setup = Setup; // make copy of.
+		m_Setup = Setup;
 		m_CameraToProcessor.AssignBuffer(m_Frame, num_entries(m_Frame));
-		// to do - specify required image format (RGB 24, greyscale, ect).
-		m_CamThread.Start(m_Setup.Url, IMAGEFORMAT::IMGFMT_BGR24, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
+		// more setup data would be passed to m_CamThread, setup data lives in CIPCameraInterface::m_Setup
+		// eg, lost stream reconnection attempt or not, and other FFmpeg options.
+		m_CamThread.StartThread(m_Setup.Url, m_Setup.ImgFormat, &m_CameraToProcessor, Static_CameraReadyCallback, (void*)this);
 		return true;
 	}
 	return false;
@@ -234,8 +235,8 @@ bool CIPCameraInterface::Start(const IPCAMERASETUP& Setup)
 
 void CIPCameraInterface::Shutdown()
 {
-	m_CamThread.Terminate();
-	m_ImgProcThread.Terminate();
+	m_CamThread.TerminateThread();
+	m_ImgProcThread.TerminateThread();
 	m_Init = 0;
 }
 
@@ -246,8 +247,8 @@ void CIPCameraInterface::Static_CameraReadyCallback(CAMERA_READY_CALLBACK_PARAMS
 		CIPCameraInterface *ipc = (CIPCameraInterface*)pParam;
 		// SendMessage(...) - blocks execution until the receiving window (GUI thread) processes the message.
 		// Using SendMessage is problematic here because, here is the scenario :
-		// Camera thread starts. Calls this callback but at that instant the window in closed, and m_CamThread.Terminate() is called in OnDestroy.
-		// Next, m_CamThread.Terminate() blocks the GUI thread until the camera thread terminates. But the camera thread cant terminate because 
+		// Camera thread starts. Calls this callback but at that instant the window in closed, and m_CamThread.TerminateThread() is called in OnDestroy.
+		// Next, m_CamThread.TerminateThread() blocks the GUI thread until the camera thread terminates. But the camera thread cant terminate because 
 		// SendMessage won't return until WM_APP_CAMERA_READY msg is processed. Conclusion - dont use SendMessage.
 		ipc->m_VideoInfo = VI;
 		PostMessage(ipc->m_Setup.hWnd, (UINT)ipc->m_Setup.CameraReadyMsg, (WPARAM)ipc->m_Setup.MessageSubCode, 0);
@@ -277,34 +278,46 @@ bool CIPCameraInterface::CameraReadyMessageHandler(CDC *pScreen)
 {
 	// GUI thread message handler.
 	if (m_VideoInfo.StreamOpen){
-		for (int i=0; i<num_entries(m_ProcessedFrame); i++){
-			PROCESSED_FRAME &PF = m_ProcessedFrame[i];
-
-			// TODO - HARD CODED - Desired image format (eg, RGB 24, greyscale, ect) should be specified at startup, and passed to img proc thread.
-			// Currently img proc thread just outputs at RGB24, hence hard coded below - LineSize = Wd * 3;
-			PF.Image.Wd       = m_VideoInfo.width;
-			PF.Image.Ht       = m_VideoInfo.height;
-			PF.Image.LineSize = PF.Image.Wd * 3;
-			PF.Image.Planes   = PF.Image.LineSize / PF.Image.Wd;
-			PF.Image.Padding  = PF.Image.LineSize - (PF.Image.Wd * PF.Image.Planes);
-
-			if (i < num_entries(m_GuiData)){
-				if (m_GuiData[i].Create(pScreen, PF.Image.Wd, PF.Image.Ht, 24, true)){
-					PF.pGuiData    = (void*)&m_GuiData[i];
-					PF.Image.pData = m_GuiData[i].m_pData;
-				}
+		bool Ok = true;
+		// initialise the data in m_GuiData, which will be used in the ring buffer m_ProcessorToGui.
+		for (int i=0; i<num_entries(m_ProcessedFrame) && Ok; i++){
+			
+			if (m_Setup.ImgFormat != IMAGEFORMAT::IMGFMT_BGR24){
+				// TODO - HARD CODED - Desired image format (eg, RGB 24, 32, greyscale 8 bit, ect) should be specified in the config.txt file and applied 
+				// in m_CamThread. Currently m_CamThread only outputs at RGB24 or BGR24, hence hard coded below for IMGFMT_BGR24, LineSize = Wd * 3;
+				Ok = false;
 			}
 			else {
-				// m_GuiData and m_ProcessedFrame are defined separately, but have the same array size as each m_ProcessedFrame element contains a m_GuiData. I could 
-				// instead allocate memory for PF.Image.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
-				::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
-				return false;
+				PROCESSED_FRAME &PF = m_ProcessedFrame[i];
+				PF.Image.Wd       = m_VideoInfo.width;
+				PF.Image.Ht       = m_VideoInfo.height;
+				PF.Image.LineSize = PF.Image.Wd * 3;
+				PF.Image.Planes   = PF.Image.LineSize / PF.Image.Wd;
+				PF.Image.Padding  = PF.Image.LineSize - (PF.Image.Wd * PF.Image.Planes);
+
+				if (i < num_entries(m_GuiData)){
+					if (m_GuiData[i].Create(pScreen, PF.Image.Wd, PF.Image.Ht, 24, true)){
+						PF.pGuiData    = (void*)&m_GuiData[i];
+						PF.Image.pData = m_GuiData[i].m_pData;
+					}
+				}
+				else {
+					// m_GuiData and m_ProcessedFrame are defined separately, but have the same array size as each m_ProcessedFrame element contains a m_GuiData. I could 
+					// instead allocate memory for PF.Image.pGuiData in this loop. But I prefer not to allocate as that adds complication to the cleanup code as it will need to free the memory.
+					::AfxMessageBox(_T("error - num_entries(m_ProcessedFrame) != num_entries(m_GuiData) "));
+					Ok = false;
+				}
 			}
 		}
-		// Now the camera has started we can start the image processing thread.
-		m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
-		m_ImgProcThread.Start(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this, m_Setup.MessageSubCode);
-		return true;
+
+		if (Ok){
+			// Now the camera has started we can start the image processing thread.
+			m_ProcessorToGui.AssignBuffer(m_ProcessedFrame, num_entries(m_ProcessedFrame));
+			// todo - lots of setup data to pass to m_ImgProcThread, eg, settings for motion detection, motion recording, and all the other stuff we might do.
+			//  this setup data lives CIPCameraInterface::m_Setup.
+			m_ImgProcThread.StartThread(&m_CameraToProcessor, &m_ProcessorToGui, Static_FrameReadyCallback, (void*)this);
+			return true;
+		}
 	}
 	return false;	// m_CamThread failed to open camera.
 }
@@ -324,7 +337,7 @@ void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, int Cell_Left, i
 			CMyBitmap *pMB = (CMyBitmap*)pBuf->pGuiData;
 			if (pMB){
 				if (pMB->IsCreated()){
-					DrawImgProcOutput(&pMB->m_MemDC, &pBuf->ImgProcOut);
+					DrawProcessingResults(&pMB->m_MemDC, pBuf->PResults);
 
 					std::string info = std::format("FPS : {:.1f}", pBuf->CurrentFPS);
 					pMB->m_MemDC.SetBkMode(OPAQUE);
@@ -368,8 +381,12 @@ void CIPCameraInterface::FrameReadyMessageHandler(CDC *pScreen, int Cell_Left, i
 	}
 }
 
-void CIPCameraInterface::DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO)
+void CIPCameraInterface::DrawProcessingResults(CDC *pCDC, const PROCESSING_RESULTS &IPO)
 {
+	if (IPO.MotionDetected){
+		// todo draw red box round outside edge of the image.
+	}
+
 	int Style = PS_SOLID;// PS_DOT;
 	if(Style != PS_SOLID){
 		pCDC->SetBkMode(OPAQUE);
@@ -381,13 +398,13 @@ void CIPCameraInterface::DrawImgProcOutput(CDC *pCDC, IMG_PROC_OUTPUT *pIPO)
 	CPen *oldpen, pen(Style, 5, RGB(155,0,155));
 	oldpen = pCDC->SelectObject(&pen);
 	pCDC->SetROP2(R2_COPYPEN);
-	int Max = num_entries(pIPO->Pt);
+	int Max = num_entries(IPO.Pt);
 	for (int i=0; i<Max-1; i++){
-		pCDC->MoveTo(pIPO->Pt[i].x, pIPO->Pt[i].y);
-		pCDC->LineTo(pIPO->Pt[i+1].x, pIPO->Pt[i+1].y);
+		pCDC->MoveTo(IPO.Pt[i].x, IPO.Pt[i].y);
+		pCDC->LineTo(IPO.Pt[i+1].x, IPO.Pt[i+1].y);
 	}
-	pCDC->MoveTo(pIPO->Pt[0].x, pIPO->Pt[0].y);
-	pCDC->LineTo(pIPO->Pt[Max-1].x, pIPO->Pt[Max-1].y);
+	pCDC->MoveTo(IPO.Pt[0].x, IPO.Pt[0].y);
+	pCDC->LineTo(IPO.Pt[Max-1].x, IPO.Pt[Max-1].y);
 	//pCDC->PolyDraw(...);
 	pCDC->SelectObject(oldpen);
 }
