@@ -104,6 +104,7 @@ bool CImageConverter::Convert(const CFrame& source, CFrame& destination, bool BG
 	// Instead we'll ask FFmpeg to convert the frame into RGB24. That's the purpose of libswscale.
 	AVFrame* src = source.m_Impl->m_frame;
 	AVFrame* dst = destination.m_Impl->m_frame;
+	AVPixelFormat dst_format = BGR ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_RGB24;
 
 	if (!src || !src->data[0])
 		return false;
@@ -118,8 +119,7 @@ bool CImageConverter::Convert(const CFrame& source, CFrame& destination, bool BG
 			sws_freeContext(m_Impl->m_sws);
 		// Create the RGB converter. This object performs the colour conversion.
 		m_Impl->m_sws = sws_getContext(src->width, src->height, (AVPixelFormat)src->format, src->width, src->height, 
-										BGR ? AV_PIX_FMT_BGR24 : AV_PIX_FMT_RGB24,
-										SWS_BILINEAR, nullptr, nullptr, nullptr);
+						dst_format, SWS_BILINEAR, nullptr, nullptr, nullptr);
 		if (!m_Impl->m_sws)
 			return false;
 		m_Impl->m_width = src->width;
@@ -130,11 +130,11 @@ bool CImageConverter::Convert(const CFrame& source, CFrame& destination, bool BG
 	// Allocate destination frame if necessary
 	if (dst->width  != src->width ||
 		dst->height != src->height ||
-		dst->format != AV_PIX_FMT_RGB24 ||
+		dst->format != dst_format ||
 		dst->data[0] == nullptr)
 	{
 		av_frame_unref(dst);
-		dst->format = AV_PIX_FMT_RGB24;
+		dst->format = dst_format;
 		dst->width  = src->width;
 		dst->height = src->height;
 		if (av_frame_get_buffer(dst, 32) < 0)
